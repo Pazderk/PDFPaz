@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "PDFPaz - Local PDF Editor",
+  "name": "Brog's PDF Editor",
   "version": "1.1.0",
   "description": "100% client-side PDF editor docked to the browser's side panel: pick pages to keep, rotate, and split. No files ever leave your browser.",
   "action": {
@@ -9,7 +9,7 @@
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     },
-    "default_title": "Open PDFPaz"
+    "default_title": "Open Brog's PDF Editor"
   },
   "icons": {
     "16": "icons/icon16.png",
