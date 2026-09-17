@@ -21,6 +21,28 @@ const els = {
   btnClearSelection: document.getElementById('btnClearSelection'),
   btnReset: document.getElementById('btnReset'),
   btnApply: document.getElementById('btnApply'),
+  formFieldsSection: document.getElementById('formFieldsSection'),
+  formFieldsList: document.getElementById('formFieldsList'),
+  addFieldSection: document.getElementById('addFieldSection'),
+  flattenRow: document.getElementById('flattenRow'),
+  flattenCheckbox: document.getElementById('flattenCheckbox'),
+  fieldDesignerOverlay: document.getElementById('fieldDesignerOverlay'),
+  designerPageLabel: document.getElementById('designerPageLabel'),
+  designerCanvasWrap: document.getElementById('designerCanvasWrap'),
+  designerCanvas: document.getElementById('designerCanvas'),
+  designerBoxes: document.getElementById('designerBoxes'),
+  designerForm: document.getElementById('designerForm'),
+  designerFieldName: document.getElementById('designerFieldName'),
+  designerFieldType: document.getElementById('designerFieldType'),
+  designerFieldOptions: document.getElementById('designerFieldOptions'),
+  designerAdd: document.getElementById('designerAdd'),
+  designerCancel: document.getElementById('designerCancel'),
+  designerClose: document.getElementById('designerClose'),
+  summarizeRow: document.getElementById('summarizeRow'),
+  btnSummarize: document.getElementById('btnSummarize'),
+  summarySection: document.getElementById('summarySection'),
+  summaryStatus: document.getElementById('summaryStatus'),
+  summaryOutput: document.getElementById('summaryOutput'),
 };
 const toolButtons = Array.from(document.querySelectorAll('.tool-btn'));
 
@@ -33,7 +55,12 @@ const state = {
   stagedDeleted: new Set(), // 0-based indices currently marked in the UI, not yet applied
   selectedPages: new Set(), // 0-based indices checked as a rotation target
   rotations: new Map(),     // 0-based index -> committed additional degrees (0/90/180/270)
-  activeTool: null,         // null | 'remove' | 'rotate-selected' | 'rotate-all' | 'split' | 'export'
+  activeTool: null,         // null | 'remove' | 'rotate-selected' | 'rotate-all' | 'fill-form' | 'add-field' | 'split' | 'export'
+  hasAcroForm: false,       // whether the source PDF already has an AcroForm
+  formFieldsMeta: [],       // detected existing fields: {name, type, pageIndex, rect, options, currentValue}
+  formValues: new Map(),    // field name -> value (string | boolean), covers existing + newly added fields
+  newFields: [],            // user-created fields: {id, pageIndex, type, name, rect:{x,y,width,height} in PDF pts, options}
+  flattenForm: false,       // whether to flatten the form (bake values, remove interactivity) on export/split
 };
 
 function setStatus(message, isError = false) {
@@ -94,10 +121,101 @@ async function persistSession() {
       bytes: state.originalBytes,
       deletedPages: [...state.deletedPages],
       rotations: [...state.rotations.entries()],
+      formValues: [...state.formValues.entries()],
+      newFields: state.newFields,
+      flattenForm: state.flattenForm,
     });
   } catch (err) {
     console.error('Failed to persist session', err);
   }
+}
+
+// --- Form field detection (pdf-lib) -----------------------------------
+
+// field.constructor.name is unreliable once pdf-lib is minified (class names
+// get mangled independently of the string labels used in its own assertion
+// messages), so field types are identified via `instanceof` against the
+// actual exported classes instead.
+function classifyField(field) {
+  if (field instanceof PDFLib.PDFTextField) return 'PDFTextField';
+  if (field instanceof PDFLib.PDFCheckBox) return 'PDFCheckBox';
+  if (field instanceof PDFLib.PDFRadioGroup) return 'PDFRadioGroup';
+  if (field instanceof PDFLib.PDFDropdown) return 'PDFDropdown';
+  if (field instanceof PDFLib.PDFOptionList) return 'PDFOptionList';
+  if (field instanceof PDFLib.PDFButton) return 'PDFButton';
+  if (field instanceof PDFLib.PDFSignature) return 'PDFSignature';
+  return 'Unknown';
+}
+
+async function detectFormFields(bytes) {
+  let pdfDoc;
+  try {
+    pdfDoc = await PDFLib.PDFDocument.load(bytes.slice(), { ignoreEncryption: true });
+  } catch (err) {
+    return { hasAcroForm: false, fields: [] };
+  }
+  let form;
+  try {
+    form = pdfDoc.getForm();
+  } catch (err) {
+    return { hasAcroForm: false, fields: [] };
+  }
+  const rawFields = form.getFields();
+  if (!rawFields.length) return { hasAcroForm: false, fields: [] };
+
+  const pages = pdfDoc.getPages();
+  const fields = rawFields.map((field) => {
+    const type = classifyField(field);
+    let pageIndex = 0;
+    let rect = null;
+    try {
+      const widget = field.acroField.getWidgets()[0];
+      if (widget) {
+        const pRef = widget.P();
+        const idx = pRef ? pages.findIndex((p) => p.ref.tag === pRef.tag) : -1;
+        if (idx >= 0) pageIndex = idx;
+        const r = widget.getRectangle();
+        rect = { x: r.x, y: r.y, width: r.width, height: r.height };
+      }
+    } catch (err) {
+      // leave defaults; field will still be listed, just without a page overlay
+    }
+
+    let options = null;
+    if (type === 'PDFRadioGroup' || type === 'PDFDropdown' || type === 'PDFOptionList') {
+      try {
+        options = field.getOptions();
+      } catch (err) {
+        options = [];
+      }
+    }
+
+    let currentValue;
+    try {
+      if (type === 'PDFTextField') currentValue = field.getText() || '';
+      else if (type === 'PDFCheckBox') currentValue = field.isChecked();
+      else if (type === 'PDFDropdown' || type === 'PDFOptionList') {
+        const sel = field.getSelected();
+        currentValue = sel && sel.length ? sel[0] : '';
+      } else if (type === 'PDFRadioGroup') {
+        currentValue = field.getSelected() || '';
+      }
+    } catch (err) {
+      // leave undefined
+    }
+
+    return { name: field.getName(), type, pageIndex, rect, options, currentValue };
+  });
+
+  return { hasAcroForm: true, fields };
+}
+
+async function applyFormDetection() {
+  const detection = await detectFormFields(state.originalBytes);
+  state.hasAcroForm = detection.hasAcroForm;
+  state.formFieldsMeta = detection.fields;
+  const values = new Map(detection.fields.map((f) => [f.name, f.currentValue]));
+  return values;
 }
 
 async function restoreSession() {
@@ -117,10 +235,15 @@ async function restoreSession() {
     state.deletedPages = new Set(record.deletedPages || []);
     state.rotations = new Map(record.rotations || []);
     state.stagedDeleted = new Set(state.deletedPages);
+    state.newFields = record.newFields || [];
+    state.flattenForm = !!record.flattenForm;
 
     const loadingTask = pdfjsLib.getDocument({ data: state.originalBytes.slice() });
     state.pdfjsDoc = await loadingTask.promise;
     state.numPages = state.pdfjsDoc.numPages;
+
+    state.formValues = await applyFormDetection();
+    (record.formValues || []).forEach(([k, v]) => state.formValues.set(k, v));
 
     await renderThumbnails();
     showEditorUI();
@@ -254,6 +377,11 @@ async function loadFile(file) {
     state.selectedPages = new Set();
     state.rotations = new Map();
     state.activeTool = null;
+    state.hasAcroForm = false;
+    state.formFieldsMeta = [];
+    state.formValues = new Map();
+    state.newFields = [];
+    state.flattenForm = false;
 
     if (state.pdfjsDoc) {
       state.pdfjsDoc.destroy();
@@ -263,6 +391,8 @@ async function loadFile(file) {
     const loadingTask = pdfjsLib.getDocument({ data: state.originalBytes.slice() });
     state.pdfjsDoc = await loadingTask.promise;
     state.numPages = state.pdfjsDoc.numPages;
+
+    state.formValues = await applyFormDetection();
 
     await renderThumbnails();
     showEditorUI();
@@ -282,14 +412,26 @@ function showEditorUI() {
   els.toolSection.style.display = 'block';
   els.keepSection.style.display = 'block';
   els.actionRow.style.display = 'flex';
+  els.summarizeRow.style.display = 'block';
+  els.flattenCheckbox.checked = state.flattenForm;
   updateDocInfo();
+  updateFlattenRowVisibility();
 }
 
 function updateDocInfo() {
   const activeCount = state.numPages - state.deletedPages.size;
-  els.docInfo.textContent =
+  let text =
     `${state.baseName}.pdf — ${state.numPages} page${state.numPages === 1 ? '' : 's'} total, ` +
     `${activeCount} currently active.`;
+  const fillableCount = state.formFieldsMeta.filter(
+    (f) => f.type !== 'PDFButton' && f.type !== 'PDFSignature'
+  ).length;
+  if (fillableCount) text += ` ${fillableCount} form field(s) detected.`;
+  els.docInfo.textContent = text;
+}
+
+function updateFlattenRowVisibility() {
+  els.flattenRow.style.display = state.hasAcroForm || state.newFields.length > 0 ? 'flex' : 'none';
 }
 
 // --- Thumbnail rendering -----------------------------------------------
@@ -336,6 +478,9 @@ async function renderThumbnails() {
     const badge = document.createElement('div');
     badge.className = 'rot-badge';
 
+    const fieldBadge = document.createElement('div');
+    fieldBadge.className = 'field-badge';
+
     const label = document.createElement('div');
     label.className = 'page-label';
     label.textContent = `Page ${pageNum}`;
@@ -343,10 +488,15 @@ async function renderThumbnails() {
     card.appendChild(checkLabel);
     card.appendChild(tag);
     card.appendChild(badge);
+    card.appendChild(fieldBadge);
     card.appendChild(canvas);
     card.appendChild(label);
 
     card.addEventListener('click', () => {
+      if (state.activeTool === 'add-field') {
+        openFieldDesigner(pageIndex);
+        return;
+      }
       if (state.stagedDeleted.has(pageIndex)) state.stagedDeleted.delete(pageIndex);
       else state.stagedDeleted.add(pageIndex);
       refreshAllCardVisuals();
@@ -408,6 +558,15 @@ function refreshAllCardVisuals() {
     } else {
       badge.style.display = 'none';
     }
+
+    const fieldBadge = card.querySelector('.field-badge');
+    const newFieldCount = state.newFields.filter((f) => f.pageIndex === idx).length;
+    if (newFieldCount) {
+      fieldBadge.textContent = `+${newFieldCount} field${newFieldCount === 1 ? '' : 's'}`;
+      fieldBadge.style.display = 'block';
+    } else {
+      fieldBadge.style.display = 'none';
+    }
   });
 }
 
@@ -416,8 +575,89 @@ function refreshAllCardVisuals() {
 function setActiveTool(tool) {
   state.activeTool = state.activeTool === tool ? null : tool;
   toolButtons.forEach((btn) => btn.classList.toggle('active', btn.dataset.tool === state.activeTool));
+  els.formFieldsSection.style.display = state.activeTool === 'fill-form' ? 'block' : 'none';
+  els.addFieldSection.style.display = state.activeTool === 'add-field' ? 'block' : 'none';
+  if (state.activeTool === 'fill-form') renderFormFieldsPanel();
   refreshAllCardVisuals();
   updateApplyHint();
+}
+
+// --- Fill Form panel -------------------------------------------------------
+
+const NEW_FIELD_TYPE_MAP = { text: 'PDFTextField', checkbox: 'PDFCheckBox', dropdown: 'PDFDropdown' };
+
+function renderFormFieldsPanel() {
+  const container = els.formFieldsList;
+  container.innerHTML = '';
+  const existing = state.formFieldsMeta.filter((f) => f.type !== 'PDFButton' && f.type !== 'PDFSignature');
+  const created = state.newFields.map((f) => ({
+    name: f.name,
+    type: NEW_FIELD_TYPE_MAP[f.type] || 'PDFTextField',
+    pageIndex: f.pageIndex,
+    options: f.options,
+  }));
+  const fillable = [...existing, ...created];
+  if (!fillable.length) {
+    container.innerHTML = '<div class="hint-text">No fillable fields detected in this PDF. Use "Add Field" to create some.</div>';
+    return;
+  }
+  const byPage = new Map();
+  fillable.forEach((f) => {
+    if (!byPage.has(f.pageIndex)) byPage.set(f.pageIndex, []);
+    byPage.get(f.pageIndex).push(f);
+  });
+  [...byPage.keys()].sort((a, b) => a - b).forEach((pageIdx) => {
+    const header = document.createElement('div');
+    header.className = 'field-page-header';
+    header.textContent = `Page ${pageIdx + 1}`;
+    container.appendChild(header);
+    byPage.get(pageIdx).forEach((f) => container.appendChild(buildFieldRow(f)));
+  });
+}
+
+function buildFieldRow(f) {
+  const row = document.createElement('div');
+  row.className = 'field-row';
+  const label = document.createElement('label');
+  label.textContent = f.name;
+  label.title = f.name;
+  row.appendChild(label);
+
+  const currentVal = state.formValues.get(f.name);
+  let input;
+  if (f.type === 'PDFCheckBox') {
+    input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = !!currentVal;
+    input.addEventListener('change', () => {
+      state.formValues.set(f.name, input.checked);
+    });
+  } else if (f.type === 'PDFDropdown' || f.type === 'PDFRadioGroup' || f.type === 'PDFOptionList') {
+    input = document.createElement('select');
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = '(none)';
+    input.appendChild(blank);
+    (f.options || []).forEach((opt) => {
+      const o = document.createElement('option');
+      o.value = opt;
+      o.textContent = opt;
+      if (opt === currentVal) o.selected = true;
+      input.appendChild(o);
+    });
+    input.addEventListener('change', () => {
+      state.formValues.set(f.name, input.value);
+    });
+  } else {
+    input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentVal || '';
+    input.addEventListener('input', () => {
+      state.formValues.set(f.name, input.value);
+    });
+  }
+  row.appendChild(input);
+  return row;
 }
 
 function updateApplyHint() {
@@ -438,6 +678,14 @@ function updateApplyHint() {
   } else if (tool === 'rotate-all') {
     hint = `Ready to rotate all ${state.numPages} page(s) by ${els.rotateAngle.value}°.`;
     canApply = state.numPages > 0;
+  } else if (tool === 'fill-form') {
+    hint = 'Edit values above, then press Apply to save them to this session.';
+    canApply = true;
+  } else if (tool === 'add-field') {
+    hint = state.newFields.length
+      ? `${state.newFields.length} new field(s) staged. Click a page to add more, then press Apply.`
+      : 'Click a page thumbnail below to open the field designer.';
+    canApply = true;
   } else if (tool === 'split') {
     const active = state.numPages - state.deletedPages.size;
     hint = `Ready to split ${active} active page(s) into separate PDFs.`;
@@ -450,6 +698,7 @@ function updateApplyHint() {
 
   els.applyHint.textContent = hint;
   els.btnApply.disabled = !canApply;
+  updateFlattenRowVisibility();
 }
 
 async function applyCurrentTool() {
@@ -475,6 +724,12 @@ async function applyCurrentTool() {
       commitRotation(all, Number(els.rotateAngle.value));
       await persistSession();
       setStatus('Rotated all pages.');
+    } else if (tool === 'fill-form') {
+      await persistSession();
+      setStatus('Form values saved.');
+    } else if (tool === 'add-field') {
+      await persistSession();
+      setStatus(`Saved ${state.newFields.length} field definition(s).`);
     } else if (tool === 'split') {
       await splitDocument();
     } else if (tool === 'export') {
@@ -512,6 +767,58 @@ async function buildEditedDocument() {
       page.setRotation(PDFLib.degrees((current + addedAngle) % 360));
     }
   });
+
+  if (state.hasAcroForm || state.newFields.length) {
+    const form = pdfDoc.getForm();
+
+    for (const nf of state.newFields) {
+      const page = pages[nf.pageIndex];
+      if (!page) continue;
+      const { x, y, width, height } = nf.rect;
+      const val = state.formValues.get(nf.name);
+      try {
+        if (nf.type === 'checkbox') {
+          const field = form.createCheckBox(nf.name);
+          field.addToPage(page, { x, y, width, height, borderWidth: 1 });
+          if (val) field.check();
+        } else if (nf.type === 'dropdown') {
+          const field = form.createDropdown(nf.name);
+          field.addToPage(page, { x, y, width, height, borderWidth: 1 });
+          field.setOptions(nf.options || []);
+          if (val) field.select(val);
+        } else {
+          const field = form.createTextField(nf.name);
+          field.addToPage(page, { x, y, width, height, borderWidth: 1 });
+          if (val) field.setText(String(val));
+        }
+      } catch (err) {
+        console.error(`Failed to create field "${nf.name}"`, err);
+      }
+    }
+
+    for (const meta of state.formFieldsMeta) {
+      if (meta.type === 'PDFButton' || meta.type === 'PDFSignature') continue;
+      if (!state.formValues.has(meta.name)) continue;
+      const val = state.formValues.get(meta.name);
+      try {
+        const field = form.getField(meta.name);
+        if (meta.type === 'PDFTextField') field.setText(val ? String(val) : '');
+        else if (meta.type === 'PDFCheckBox') { if (val) field.check(); else field.uncheck(); }
+        else if (val) field.select(val);
+      } catch (err) {
+        console.error(`Failed to set field "${meta.name}"`, err);
+      }
+    }
+
+    if (state.flattenForm) {
+      try {
+        form.flatten();
+      } catch (err) {
+        console.error('Failed to flatten form', err);
+      }
+    }
+  }
+
   return pdfDoc;
 }
 
@@ -562,6 +869,11 @@ async function resetEverything() {
   state.selectedPages = new Set();
   state.rotations = new Map();
   state.activeTool = null;
+  state.hasAcroForm = false;
+  state.formFieldsMeta = [];
+  state.formValues = new Map();
+  state.newFields = [];
+  state.flattenForm = false;
 
   await clearSession();
 
@@ -571,12 +883,303 @@ async function resetEverything() {
   els.toolSection.style.display = 'none';
   els.keepSection.style.display = 'none';
   els.actionRow.style.display = 'none';
+  els.formFieldsSection.style.display = 'none';
+  els.addFieldSection.style.display = 'none';
+  els.flattenRow.style.display = 'none';
+  els.fieldDesignerOverlay.style.display = 'none';
+  els.summarizeRow.style.display = 'none';
+  els.summarySection.style.display = 'none';
+  els.summaryOutput.textContent = '';
+  els.summaryStatus.textContent = '';
   els.keepInput.value = '';
   els.fileInput.value = '';
   toolButtons.forEach((btn) => btn.classList.remove('active'));
   updateApplyHint();
   setStatus('Reset. Load a PDF to start again.');
 }
+
+// --- Field designer (Add Field tool) ---------------------------------------
+
+let designerState = null; // { pageIndex, scale, pdfWidth, pdfHeight }
+let dragRect = null;      // { x1, y1, x2, y2 } in canvas CSS pixels, while dragging
+let pendingScreenRect = null;
+
+async function openFieldDesigner(pageIndex) {
+  designerState = null;
+  els.designerPageLabel.textContent = `Page ${pageIndex + 1}`;
+  els.designerForm.style.display = 'none';
+  els.designerBoxes.innerHTML = '';
+  els.fieldDesignerOverlay.style.display = 'flex';
+
+  const page = await state.pdfjsDoc.getPage(pageIndex + 1);
+  const baseViewport = page.getViewport({ scale: 1 });
+  const wrapWidth = els.designerCanvasWrap.clientWidth || 260;
+  const scale = Math.max(0.5, Math.min(3, (wrapWidth - 2) / baseViewport.width));
+  const viewport = page.getViewport({ scale });
+
+  const canvas = els.designerCanvas;
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const ctx = canvas.getContext('2d');
+  await page.render({ canvasContext: ctx, viewport }).promise;
+
+  designerState = { pageIndex, scale, pdfWidth: baseViewport.width, pdfHeight: baseViewport.height };
+  renderDesignerBoxes();
+}
+
+function renderDesignerBoxes() {
+  els.designerBoxes.innerHTML = '';
+  if (!designerState) return;
+  const { pageIndex, scale, pdfHeight } = designerState;
+  els.designerBoxes.style.width = `${els.designerCanvas.width}px`;
+  els.designerBoxes.style.height = `${els.designerCanvas.height}px`;
+
+  state.formFieldsMeta
+    .filter((f) => f.pageIndex === pageIndex && f.rect)
+    .forEach((f) => els.designerBoxes.appendChild(makeDesignerBox(f.rect, scale, pdfHeight, f.name, false)));
+
+  state.newFields
+    .filter((f) => f.pageIndex === pageIndex)
+    .forEach((f) => els.designerBoxes.appendChild(makeDesignerBox(f.rect, scale, pdfHeight, f.name, true, f.id)));
+}
+
+function makeDesignerBox(rect, scale, pdfHeight, name, removable, id) {
+  const box = document.createElement('div');
+  box.className = 'designer-box' + (removable ? ' new' : ' existing');
+  box.style.left = `${rect.x * scale}px`;
+  box.style.top = `${(pdfHeight - rect.y - rect.height) * scale}px`;
+  box.style.width = `${rect.width * scale}px`;
+  box.style.height = `${rect.height * scale}px`;
+
+  const tag = document.createElement('span');
+  tag.className = 'designer-box-label';
+  tag.textContent = name;
+  box.appendChild(tag);
+
+  if (removable) {
+    const rm = document.createElement('button');
+    rm.className = 'designer-box-remove';
+    rm.textContent = '×';
+    rm.title = 'Remove this field';
+    rm.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.newFields = state.newFields.filter((f) => f.id !== id);
+      state.formValues.delete(name);
+      renderDesignerBoxes();
+      refreshAllCardVisuals();
+      updateApplyHint();
+    });
+    box.appendChild(rm);
+  }
+  return box;
+}
+
+function updateDragPreview() {
+  let el = document.getElementById('designerDragPreview');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'designerDragPreview';
+    el.className = 'designer-drag-preview';
+    els.designerBoxes.appendChild(el);
+  }
+  const left = Math.min(dragRect.x1, dragRect.x2);
+  const top = Math.min(dragRect.y1, dragRect.y2);
+  const width = Math.abs(dragRect.x2 - dragRect.x1);
+  const height = Math.abs(dragRect.y2 - dragRect.y1);
+  Object.assign(el.style, { left: `${left}px`, top: `${top}px`, width: `${width}px`, height: `${height}px` });
+}
+
+function removeDragPreview() {
+  const el = document.getElementById('designerDragPreview');
+  if (el) el.remove();
+}
+
+els.designerCanvasWrap.addEventListener('pointerdown', (e) => {
+  if (!designerState || e.target.closest('.designer-box')) return;
+  const bounds = els.designerCanvas.getBoundingClientRect();
+  const x = e.clientX - bounds.left;
+  const y = e.clientY - bounds.top;
+  if (x < 0 || y < 0 || x > bounds.width || y > bounds.height) return;
+  dragRect = { x1: x, y1: y, x2: x, y2: y };
+  els.designerCanvasWrap.setPointerCapture(e.pointerId);
+  updateDragPreview();
+});
+els.designerCanvasWrap.addEventListener('pointermove', (e) => {
+  if (!dragRect) return;
+  const bounds = els.designerCanvas.getBoundingClientRect();
+  dragRect.x2 = Math.max(0, Math.min(bounds.width, e.clientX - bounds.left));
+  dragRect.y2 = Math.max(0, Math.min(bounds.height, e.clientY - bounds.top));
+  updateDragPreview();
+});
+els.designerCanvasWrap.addEventListener('pointerup', () => {
+  if (!dragRect) return;
+  const { x1, y1, x2, y2 } = dragRect;
+  dragRect = null;
+  removeDragPreview();
+  const left = Math.min(x1, x2);
+  const top = Math.min(y1, y2);
+  const width = Math.abs(x2 - x1);
+  const height = Math.abs(y2 - y1);
+  if (width < 6 || height < 6) return; // ignore accidental clicks/taps
+  pendingScreenRect = { left, top, width, height };
+  els.designerFieldName.value = '';
+  els.designerFieldType.value = 'text';
+  els.designerFieldOptions.style.display = 'none';
+  els.designerFieldOptions.value = '';
+  els.designerForm.style.display = 'flex';
+  els.designerFieldName.focus();
+});
+
+els.designerFieldType.addEventListener('change', () => {
+  els.designerFieldOptions.style.display = els.designerFieldType.value === 'dropdown' ? 'block' : 'none';
+});
+
+els.designerAdd.addEventListener('click', () => {
+  const name = els.designerFieldName.value.trim();
+  if (!name) {
+    setStatus('Field name is required.', true);
+    return;
+  }
+  const used = new Set([
+    ...state.formFieldsMeta.map((f) => f.name),
+    ...state.newFields.map((f) => f.name),
+  ]);
+  if (used.has(name)) {
+    setStatus(`Field name "${name}" is already used.`, true);
+    return;
+  }
+  const type = els.designerFieldType.value;
+  let options = null;
+  if (type === 'dropdown') {
+    options = els.designerFieldOptions.value.split(',').map((s) => s.trim()).filter(Boolean);
+    if (!options.length) {
+      setStatus('Add at least one option for a dropdown field.', true);
+      return;
+    }
+  }
+
+  const { scale, pdfHeight } = designerState;
+  const { left, top, width, height } = pendingScreenRect;
+  const rect = {
+    x: left / scale,
+    y: pdfHeight - (top + height) / scale,
+    width: width / scale,
+    height: height / scale,
+  };
+
+  state.newFields.push({
+    id: `f${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
+    pageIndex: designerState.pageIndex,
+    type,
+    name,
+    rect,
+    options,
+  });
+  state.formValues.set(name, type === 'checkbox' ? false : '');
+
+  els.designerForm.style.display = 'none';
+  renderDesignerBoxes();
+  refreshAllCardVisuals();
+  updateApplyHint();
+  setStatus(`Added field "${name}".`);
+});
+
+els.designerCancel.addEventListener('click', () => {
+  els.designerForm.style.display = 'none';
+});
+els.designerClose.addEventListener('click', () => {
+  els.fieldDesignerOverlay.style.display = 'none';
+  designerState = null;
+});
+
+els.flattenCheckbox.addEventListener('change', () => {
+  state.flattenForm = els.flattenCheckbox.checked;
+  persistSession();
+});
+
+// --- Chrome on-device AI summarize -----------------------------------------
+
+async function extractActiveText() {
+  let combined = '';
+  for (let i = 0; i < state.numPages; i++) {
+    if (state.deletedPages.has(i)) continue;
+    const page = await state.pdfjsDoc.getPage(i + 1);
+    const content = await page.getTextContent();
+    combined += content.items.map((it) => it.str).join(' ') + '\n\n';
+  }
+  return combined;
+}
+
+async function summarizeDocument() {
+  if (!state.pdfjsDoc) return;
+  els.btnSummarize.disabled = true;
+  els.summarySection.style.display = 'block';
+  els.summaryOutput.textContent = '';
+  els.summaryStatus.textContent = 'Checking availability…';
+  try {
+    if (typeof Summarizer === 'undefined') {
+      els.summaryStatus.textContent =
+        "Chrome's built-in Summarizer AI isn't available in this browser. It requires a recent Chrome (138+) with on-device AI.";
+      return;
+    }
+    const availability = await Summarizer.availability();
+    if (availability === 'unavailable') {
+      els.summaryStatus.textContent = 'The on-device summarization model is unavailable on this device.';
+      return;
+    }
+
+    els.summaryStatus.textContent = 'Extracting text…';
+    const text = await extractActiveText();
+    if (!text.trim()) {
+      els.summaryStatus.textContent = 'No extractable text found (this may be a scanned/image PDF).';
+      return;
+    }
+
+    els.summaryStatus.textContent = 'Preparing on-device model…';
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), 60000);
+    let summarizer;
+    try {
+      summarizer = await Summarizer.create({
+        type: 'key-points',
+        format: 'plain-text',
+        length: 'medium',
+        signal: abortController.signal,
+        monitor(m) {
+          m.addEventListener('downloadprogress', (e) => {
+            els.summaryStatus.textContent = `Downloading on-device model… ${Math.round(e.loaded * 100)}%`;
+          });
+        },
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    els.summaryStatus.textContent = 'Summarizing…';
+    const truncated = text.length > 20000 ? text.slice(0, 20000) : text;
+    const summary = await summarizer.summarize(truncated, {
+      context: `Text extracted from a PDF named ${state.baseName}.pdf.`,
+      signal: abortController.signal,
+    });
+    summarizer.destroy();
+
+    els.summaryOutput.textContent = summary;
+    els.summaryStatus.textContent =
+      truncated.length < text.length ? 'Summary (document truncated for length):' : 'Summary:';
+  } catch (err) {
+    console.error(err);
+    if (err.name === 'AbortError') {
+      els.summaryStatus.textContent =
+        "Timed out waiting for Chrome's on-device model to become ready. It may still be downloading in the background — try again shortly.";
+    } else {
+      els.summaryStatus.textContent = `Summarization failed: ${err.message}`;
+    }
+  } finally {
+    els.btnSummarize.disabled = false;
+  }
+}
+
+els.btnSummarize.addEventListener('click', summarizeDocument);
 
 // --- Wiring ------------------------------------------------------------
 

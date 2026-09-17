@@ -278,6 +278,181 @@
     text-align: center;
     border-top: 1px solid var(--border);
   }
+
+  .hint-text { color: var(--text-dim); font-size: 11.5px; padding: 4px 0; }
+
+  .field-page-header {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--text-dim);
+    margin: 10px 0 4px;
+  }
+  .field-page-header:first-child { margin-top: 0; }
+
+  .field-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+  }
+  .field-row label {
+    flex: 0 0 40%;
+    font-size: 11.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .field-row input[type=text],
+  .field-row select {
+    flex: 1;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 7px;
+    font-size: 11.5px;
+    font-family: inherit;
+    min-width: 0;
+  }
+  .field-row input[type=checkbox] { width: 15px; height: 15px; flex: 0 0 auto; }
+
+  #flattenRow {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px 0;
+    font-size: 11.5px;
+    color: var(--text-dim);
+  }
+  #flattenRow input { width: 14px; height: 14px; }
+
+  .field-badge {
+    position: absolute;
+    bottom: 4px;
+    right: 4px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 600;
+    padding: 1px 4px;
+    border-radius: 8px;
+    display: none;
+  }
+
+  .designer-overlay {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    z-index: 20;
+    display: none;
+    flex-direction: column;
+  }
+  .designer-modal { display: flex; flex-direction: column; height: 100%; overflow-y: auto; }
+  .designer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .designer-hint {
+    padding: 6px 14px 0;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .designer-canvas-wrap {
+    position: relative;
+    margin: 10px 14px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    max-height: 45vh;
+    touch-action: none;
+  }
+  #designerCanvas { display: block; background: #fff; }
+  #designerBoxes { position: absolute; top: 0; left: 0; }
+  .designer-box {
+    position: absolute;
+    border: 1.5px solid var(--accent);
+    background: rgba(79,140,255,0.12);
+    box-sizing: border-box;
+  }
+  .designer-box.existing { border-color: var(--amber); background: rgba(217,154,43,0.12); }
+  .designer-box-label {
+    position: absolute;
+    top: -16px;
+    left: -1.5px;
+    font-size: 9px;
+    background: var(--panel);
+    padding: 0 3px;
+    border-radius: 2px;
+    white-space: nowrap;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .designer-box-remove {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: none;
+    background: var(--danger);
+    color: #fff;
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+  }
+  .designer-drag-preview {
+    position: absolute;
+    border: 1.5px dashed var(--accent);
+    background: rgba(79,140,255,0.15);
+    pointer-events: none;
+  }
+  .designer-form {
+    display: none;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0 14px 10px;
+    padding: 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .designer-form input, .designer-form select {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 12px;
+    font-family: inherit;
+  }
+
+  #summarizeRow { display: none; padding: 0 14px 10px; }
+  #summarySection {
+    display: none;
+    padding: 0 14px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  #summaryOutput {
+    white-space: pre-wrap;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    margin-top: 4px;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+  #summaryStatus { font-size: 11px; color: var(--text-dim); }
 </style>
 </head>
 <body>
@@ -293,12 +468,23 @@
 
   <div id="docInfo"></div>
 
+  <div id="summarizeRow">
+    <button class="btn" id="btnSummarize">Summarize with Chrome AI</button>
+  </div>
+  <div id="summarySection">
+    <div class="block-label">Summary</div>
+    <div id="summaryStatus"></div>
+    <div id="summaryOutput"></div>
+  </div>
+
   <section class="panel-block" id="toolSection">
     <div class="block-label">Choose an action, then Apply</div>
     <div id="toolButtons">
       <button class="btn tool-btn" id="toolRemove" data-tool="remove">Remove Pages</button>
       <button class="btn tool-btn" id="toolRotateSelected" data-tool="rotate-selected">Rotate Selected</button>
       <button class="btn tool-btn" id="toolRotateAll" data-tool="rotate-all">Rotate All</button>
+      <button class="btn tool-btn" id="toolFillForm" data-tool="fill-form">Fill Form</button>
+      <button class="btn tool-btn" id="toolAddField" data-tool="add-field">Add Field</button>
       <button class="btn tool-btn" id="toolSplit" data-tool="split">Split into Pages</button>
       <button class="btn tool-btn" id="toolExport" data-tool="export">Export PDF</button>
     </div>
@@ -318,6 +504,20 @@
     <div id="keepHint">Type a range, or click thumbnails below &mdash; both stay in sync. Nothing is removed until you press Apply.</div>
   </section>
 
+  <section class="panel-block" id="formFieldsSection">
+    <div class="block-label">Fill Form</div>
+    <div id="formFieldsList"></div>
+  </section>
+
+  <section class="panel-block" id="addFieldSection">
+    <div class="block-label">Add Field</div>
+    <div class="hint-text">Click a page thumbnail below to open the field designer, then drag on the page to draw a new field.</div>
+  </section>
+
+  <div id="flattenRow">
+    <label><input type="checkbox" id="flattenCheckbox" /> Flatten form fields on export (bakes values in permanently; recommended before Split)</label>
+  </div>
+
   <div id="applyHint"></div>
 
   <div id="actionRow" style="display: none;">
@@ -331,6 +531,33 @@
   <div id="thumbnailGrid"></div>
 
   <footer>Powered by pdf-lib &amp; PDF.js &mdash; no network requests, ever.</footer>
+
+  <div id="fieldDesignerOverlay" class="designer-overlay">
+    <div class="designer-modal">
+      <div class="designer-header">
+        <span id="designerPageLabel">Page 1</span>
+        <button class="btn" id="designerClose">Close</button>
+      </div>
+      <div class="designer-hint">Drag on the page to draw a new field. Amber boxes are existing fields; blue boxes are new ones you've staged.</div>
+      <div id="designerCanvasWrap" class="designer-canvas-wrap">
+        <canvas id="designerCanvas"></canvas>
+        <div id="designerBoxes"></div>
+      </div>
+      <div id="designerForm" class="designer-form">
+        <input type="text" id="designerFieldName" placeholder="Field name" />
+        <select id="designerFieldType">
+          <option value="text">Text</option>
+          <option value="checkbox">Checkbox</option>
+          <option value="dropdown">Dropdown</option>
+        </select>
+        <input type="text" id="designerFieldOptions" placeholder="Options, comma-separated" style="display:none;" />
+        <div class="row">
+          <button class="btn primary" id="designerAdd">Add Field</button>
+          <button class="btn" id="designerCancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <script src="lib/pdf.min.js"></script>
   <script src="lib/pdf-lib.min.js"></script>
