@@ -8,6 +8,11 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.j
 const els = {
   dropZone: document.getElementById('dropZone'),
   fileInput: document.getElementById('fileInput'),
+  mergeRow: document.getElementById('mergeRow'),
+  btnMerge: document.getElementById('btnMerge'),
+  mergeFileInput: document.getElementById('mergeFileInput'),
+  recentSection: document.getElementById('recentSection'),
+  recentList: document.getElementById('recentList'),
   docInfo: document.getElementById('docInfo'),
   toolSection: document.getElementById('toolSection'),
   keepSection: document.getElementById('keepSection'),
@@ -28,6 +33,7 @@ const els = {
   flattenCheckbox: document.getElementById('flattenCheckbox'),
   fieldDesignerOverlay: document.getElementById('fieldDesignerOverlay'),
   designerPageLabel: document.getElementById('designerPageLabel'),
+  designerHint: document.getElementById('designerHint'),
   designerCanvasWrap: document.getElementById('designerCanvasWrap'),
   designerCanvas: document.getElementById('designerCanvas'),
   designerBoxes: document.getElementById('designerBoxes'),
@@ -53,6 +59,21 @@ const els = {
   watermarkTile: document.getElementById('watermarkTile'),
   watermarkScopeAll: document.getElementById('watermarkScopeAll'),
   watermarkScopeSelected: document.getElementById('watermarkScopeSelected'),
+  redactSection: document.getElementById('redactSection'),
+  insertPageSection: document.getElementById('insertPageSection'),
+  insertTypeBlank: document.getElementById('insertTypeBlank'),
+  insertTypeImage: document.getElementById('insertTypeImage'),
+  insertImageRow: document.getElementById('insertImageRow'),
+  insertImageFile: document.getElementById('insertImageFile'),
+  insertPosition: document.getElementById('insertPosition'),
+  btnInsertPage: document.getElementById('btnInsertPage'),
+  pageNumberSection: document.getElementById('pageNumberSection'),
+  pageNumberTemplate: document.getElementById('pageNumberTemplate'),
+  pageNumberPosition: document.getElementById('pageNumberPosition'),
+  pageNumberSize: document.getElementById('pageNumberSize'),
+  pageNumberColor: document.getElementById('pageNumberColor'),
+  pageNumberScopeAll: document.getElementById('pageNumberScopeAll'),
+  pageNumberScopeSelected: document.getElementById('pageNumberScopeSelected'),
 };
 const toolButtons = Array.from(document.querySelectorAll('.tool-btn'));
 
@@ -61,17 +82,22 @@ const state = {
   pdfjsDoc: null,        // pdf.js document proxy, used for rendering
   numPages: 0,
   baseName: 'document',
-  deletedPages: new Set(),  // 0-based indices committed for removal (used by Export/Split)
-  stagedDeleted: new Set(), // 0-based indices currently marked in the UI, not yet applied
-  selectedPages: new Set(), // 0-based indices checked as a rotation target
-  rotations: new Map(),     // 0-based index -> committed additional degrees (0/90/180/270)
-  activeTool: null,         // null | 'remove' | 'rotate-selected' | 'rotate-all' | 'fill-form' | 'add-field' | 'split' | 'export'
+  deletedPages: new Set(),  // 0-based original indices committed for removal
+  stagedDeleted: new Set(), // 0-based original indices currently marked in the UI, not yet applied
+  selectedPages: new Set(), // 0-based original indices checked as a rotation/scope target
+  rotations: new Map(),     // 0-based original index -> committed additional degrees (0/90/180/270)
+  pageOrder: [],             // permutation of original 0-based indices, controls display/export order
+  activeTool: null,          // null | 'remove' | 'rotate-selected' | 'rotate-all' | 'fill-form' | 'add-field'
+                              // | 'watermark' | 'redact' | 'insert-page' | 'page-numbers' | 'split' | 'export'
   hasAcroForm: false,       // whether the source PDF already has an AcroForm
   formFieldsMeta: [],       // detected existing fields: {name, type, pageIndex, rect, options, currentValue}
   formValues: new Map(),    // field name -> value (string | boolean), covers existing + newly added fields
   newFields: [],            // user-created fields: {id, pageIndex, type, name, rect:{x,y,width,height} in PDF pts, options}
   flattenForm: false,       // whether to flatten the form (bake values, remove interactivity) on export/split
   watermark: null,          // null | {text, fontSize, rotation, color, opacity, tile, pageIndices:[...]}
+  redactions: [],           // {id, pageIndex, rect:{x,y,width,height} in PDF pts}
+  insertions: [],           // {id, anchor: 'start'|'end'|{after:idx}, type:'blank'|'image', width, height, imageBytes, imageFormat}
+  pageNumbering: null,      // null | {template, position, fontSize, color, pageIndices:[...]}
 };
 
 function setStatus(message, isError = false) {
@@ -85,11 +111,20 @@ function setBusy(busy) {
 }
 
 // --- IndexedDB persistence --------------------------------------------------
+// 'session' holds the single currently-open document (out-of-line key 'current').
+// 'recent' holds a capped history of documents that were previously open,
+// keyed by an in-line generated id, to support reopening them later.
+
+const MAX_RECENT = 8;
 
 function openDatabase() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('pdfpaz-db', 1);
-    req.onupgradeneeded = () => req.result.createObjectStore('session');
+    const req = indexedDB.open('pdfpaz-db', 2);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('session')) db.createObjectStore('session');
+      if (!db.objectStoreNames.contains('recent')) db.createObjectStore('recent', { keyPath: 'id' });
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
@@ -125,20 +160,179 @@ async function idbDelete(key) {
   });
 }
 
+async function recentPut(entry) {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('recent', 'readwrite');
+    tx.objectStore('recent').put(entry);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function recentGetAll() {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('recent', 'readonly');
+    const req = tx.objectStore('recent').getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function recentDelete(id) {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('recent', 'readwrite');
+    tx.objectStore('recent').delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+function buildSessionSnapshot() {
+  return {
+    baseName: state.baseName,
+    bytes: state.originalBytes,
+    deletedPages: [...state.deletedPages],
+    rotations: [...state.rotations.entries()],
+    formValues: [...state.formValues.entries()],
+    newFields: state.newFields,
+    flattenForm: state.flattenForm,
+    watermark: state.watermark,
+    pageOrder: state.pageOrder,
+    insertions: state.insertions,
+    redactions: state.redactions,
+    pageNumbering: state.pageNumbering,
+  };
+}
+
 async function persistSession() {
   try {
-    await idbSet('current', {
-      baseName: state.baseName,
-      bytes: state.originalBytes,
-      deletedPages: [...state.deletedPages],
-      rotations: [...state.rotations.entries()],
-      formValues: [...state.formValues.entries()],
-      newFields: state.newFields,
-      flattenForm: state.flattenForm,
-      watermark: state.watermark,
-    });
+    await idbSet('current', buildSessionSnapshot());
   } catch (err) {
     console.error('Failed to persist session', err);
+  }
+}
+
+async function clearSession() {
+  try {
+    await idbDelete('current');
+  } catch (err) {
+    console.error('Failed to clear saved session', err);
+  }
+}
+
+async function saveCurrentToRecentIfAny() {
+  if (!state.originalBytes) return;
+  try {
+    const entry = {
+      id: `r${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
+      name: state.baseName,
+      savedAt: Date.now(),
+      numPages: state.numPages,
+      snapshot: buildSessionSnapshot(),
+    };
+    await recentPut(entry);
+    const all = await recentGetAll();
+    if (all.length > MAX_RECENT) {
+      all.sort((a, b) => a.savedAt - b.savedAt);
+      const toRemove = all.slice(0, all.length - MAX_RECENT);
+      for (const e of toRemove) await recentDelete(e.id);
+    }
+  } catch (err) {
+    console.error('Failed to save to recent files', err);
+  }
+}
+
+function formatRelativeTime(ts) {
+  const mins = Math.round((Date.now() - ts) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+async function refreshRecentList() {
+  let entries = [];
+  try {
+    entries = await recentGetAll();
+  } catch (err) {
+    console.error('Failed to list recent files', err);
+  }
+  entries.sort((a, b) => b.savedAt - a.savedAt);
+  els.recentSection.style.display = entries.length ? 'block' : 'none';
+  els.recentList.innerHTML = '';
+  entries.forEach((entry) => {
+    const row = document.createElement('div');
+    row.className = 'recent-row';
+
+    const info = document.createElement('div');
+    info.className = 'recent-info';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'recent-name';
+    nameEl.textContent = `${entry.name}.pdf`;
+    const metaEl = document.createElement('div');
+    metaEl.className = 'recent-meta';
+    metaEl.textContent = `${entry.numPages} page(s) · ${formatRelativeTime(entry.savedAt)}`;
+    info.appendChild(nameEl);
+    info.appendChild(metaEl);
+
+    const openBtn = document.createElement('button');
+    openBtn.className = 'btn';
+    openBtn.textContent = 'Open';
+    openBtn.addEventListener('click', () => openRecentSession(entry.id));
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn danger';
+    delBtn.textContent = '×';
+    delBtn.title = 'Remove from recent files';
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteRecentSession(entry.id);
+    });
+
+    row.appendChild(info);
+    row.appendChild(openBtn);
+    row.appendChild(delBtn);
+    els.recentList.appendChild(row);
+  });
+}
+
+async function deleteRecentSession(id) {
+  try {
+    await recentDelete(id);
+    await refreshRecentList();
+  } catch (err) {
+    console.error('Failed to delete recent file', err);
+  }
+}
+
+async function openRecentSession(id) {
+  setBusy(true);
+  setStatus('Opening…');
+  try {
+    const all = await recentGetAll();
+    const entry = all.find((e) => e.id === id);
+    if (!entry) {
+      setStatus('That file is no longer available.', true);
+      return;
+    }
+    await saveCurrentToRecentIfAny();
+    await recentDelete(id); // it's becoming the current session now
+    await applySnapshotToState(entry.snapshot);
+    await renderThumbnails();
+    showEditorUI();
+    updateKeepInputFromStaged();
+    await persistSession();
+    setStatus(`Opened "${state.baseName}.pdf" — ${state.numPages} page(s).`);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Failed to open: ${err.message}`, true);
+  } finally {
+    setBusy(false);
+    await refreshRecentList();
   }
 }
 
@@ -230,51 +424,72 @@ async function applyFormDetection() {
   return values;
 }
 
+// --- Session loading ---------------------------------------------------
+
+async function applySnapshotToState(record) {
+  state.originalBytes = record.bytes instanceof Uint8Array ? record.bytes : new Uint8Array(record.bytes);
+  state.baseName = record.baseName || 'document';
+  state.deletedPages = new Set(record.deletedPages || []);
+  state.rotations = new Map(record.rotations || []);
+  state.stagedDeleted = new Set(state.deletedPages);
+  state.selectedPages = new Set();
+  state.activeTool = null;
+  state.newFields = record.newFields || [];
+  state.flattenForm = !!record.flattenForm;
+  state.watermark = record.watermark || null;
+  state.redactions = record.redactions || [];
+  state.pageNumbering = record.pageNumbering || null;
+  state.insertions = (record.insertions || []).map((ins) => ({
+    ...ins,
+    imageBytes: ins.imageBytes
+      ? (ins.imageBytes instanceof Uint8Array ? ins.imageBytes : new Uint8Array(ins.imageBytes))
+      : null,
+  }));
+
+  if (state.pdfjsDoc) {
+    state.pdfjsDoc.destroy();
+    state.pdfjsDoc = null;
+  }
+  const loadingTask = pdfjsLib.getDocument({ data: state.originalBytes.slice() });
+  state.pdfjsDoc = await loadingTask.promise;
+  state.numPages = state.pdfjsDoc.numPages;
+
+  state.pageOrder = (record.pageOrder && record.pageOrder.length === state.numPages)
+    ? record.pageOrder.slice()
+    : Array.from({ length: state.numPages }, (_, i) => i);
+
+  state.formValues = await applyFormDetection();
+  (record.formValues || []).forEach(([k, v]) => state.formValues.set(k, v));
+}
+
 async function restoreSession() {
   let record;
   try {
     record = await idbGet('current');
   } catch (err) {
     console.error('Failed to read saved session', err);
+    await refreshRecentList();
     return false;
   }
-  if (!record || !record.bytes) return false;
+  if (!record || !record.bytes) {
+    await refreshRecentList();
+    return false;
+  }
 
   setStatus('Restoring previous session…');
   try {
-    state.originalBytes = record.bytes instanceof Uint8Array ? record.bytes : new Uint8Array(record.bytes);
-    state.baseName = record.baseName || 'document';
-    state.deletedPages = new Set(record.deletedPages || []);
-    state.rotations = new Map(record.rotations || []);
-    state.stagedDeleted = new Set(state.deletedPages);
-    state.newFields = record.newFields || [];
-    state.flattenForm = !!record.flattenForm;
-    state.watermark = record.watermark || null;
-
-    const loadingTask = pdfjsLib.getDocument({ data: state.originalBytes.slice() });
-    state.pdfjsDoc = await loadingTask.promise;
-    state.numPages = state.pdfjsDoc.numPages;
-
-    state.formValues = await applyFormDetection();
-    (record.formValues || []).forEach(([k, v]) => state.formValues.set(k, v));
-
+    await applySnapshotToState(record);
     await renderThumbnails();
     showEditorUI();
     updateKeepInputFromStaged();
     setStatus(`Restored "${state.baseName}.pdf" — ${state.numPages} page(s).`);
+    await refreshRecentList();
     return true;
   } catch (err) {
     console.error('Failed to restore session', err);
     setStatus('Could not restore the previous session.', true);
+    await refreshRecentList();
     return false;
-  }
-}
-
-async function clearSession() {
-  try {
-    await idbDelete('current');
-  } catch (err) {
-    console.error('Failed to clear saved session', err);
   }
 }
 
@@ -306,6 +521,7 @@ function sanitizeBaseName(name) {
 }
 
 // --- Page-range parsing (the "pages to keep" text field) -------------------
+// Ranges always refer to ORIGINAL page numbers, independent of any reordering.
 
 function parseKeepRanges(text, maxPage) {
   const keep = new Set();
@@ -383,42 +599,52 @@ async function loadFile(file) {
   setStatus('Loading PDF…');
   try {
     const buffer = await file.arrayBuffer();
-    state.originalBytes = new Uint8Array(buffer);
-    state.baseName = sanitizeBaseName(file.name);
-    state.deletedPages = new Set();
-    state.stagedDeleted = new Set();
-    state.selectedPages = new Set();
-    state.rotations = new Map();
-    state.activeTool = null;
-    state.hasAcroForm = false;
-    state.formFieldsMeta = [];
-    state.formValues = new Map();
-    state.newFields = [];
-    state.flattenForm = false;
-    state.watermark = null;
-
-    if (state.pdfjsDoc) {
-      state.pdfjsDoc.destroy();
-      state.pdfjsDoc = null;
-    }
-
-    const loadingTask = pdfjsLib.getDocument({ data: state.originalBytes.slice() });
-    state.pdfjsDoc = await loadingTask.promise;
-    state.numPages = state.pdfjsDoc.numPages;
-
-    state.formValues = await applyFormDetection();
-
-    await renderThumbnails();
-    showEditorUI();
-    updateKeepInputFromStaged();
+    await saveCurrentToRecentIfAny();
+    await loadBytes(new Uint8Array(buffer), sanitizeBaseName(file.name));
     setStatus(`Loaded "${file.name}" — ${state.numPages} page${state.numPages === 1 ? '' : 's'}.`);
-    await persistSession();
   } catch (err) {
     console.error(err);
     setStatus(`Failed to load PDF: ${err.message}`, true);
   } finally {
     setBusy(false);
   }
+}
+
+async function loadBytes(bytes, baseName) {
+  state.originalBytes = bytes;
+  state.baseName = baseName;
+  state.deletedPages = new Set();
+  state.stagedDeleted = new Set();
+  state.selectedPages = new Set();
+  state.rotations = new Map();
+  state.activeTool = null;
+  state.hasAcroForm = false;
+  state.formFieldsMeta = [];
+  state.formValues = new Map();
+  state.newFields = [];
+  state.flattenForm = false;
+  state.watermark = null;
+  state.redactions = [];
+  state.insertions = [];
+  state.pageNumbering = null;
+
+  if (state.pdfjsDoc) {
+    state.pdfjsDoc.destroy();
+    state.pdfjsDoc = null;
+  }
+
+  const loadingTask = pdfjsLib.getDocument({ data: state.originalBytes.slice() });
+  state.pdfjsDoc = await loadingTask.promise;
+  state.numPages = state.pdfjsDoc.numPages;
+  state.pageOrder = Array.from({ length: state.numPages }, (_, i) => i);
+
+  state.formValues = await applyFormDetection();
+
+  await renderThumbnails();
+  showEditorUI();
+  updateKeepInputFromStaged();
+  await persistSession();
+  await refreshRecentList();
 }
 
 function showEditorUI() {
@@ -429,6 +655,7 @@ function showEditorUI() {
   els.summarizeRow.style.display = 'block';
   els.flattenCheckbox.checked = state.flattenForm;
   applyWatermarkStateToControls();
+  applyPageNumberStateToControls();
   updateDocInfo();
   updateFlattenRowVisibility();
 }
@@ -447,6 +674,16 @@ function applyWatermarkStateToControls() {
   els.watermarkScopeSelected.checked = false;
 }
 
+function applyPageNumberStateToControls() {
+  const pn = state.pageNumbering;
+  els.pageNumberTemplate.value = pn ? pn.template : 'Page {page} of {pages}';
+  els.pageNumberPosition.value = pn ? pn.position : 'bottom-center';
+  els.pageNumberSize.value = pn ? pn.fontSize : 11;
+  els.pageNumberColor.value = pn ? pn.color : '#000000';
+  els.pageNumberScopeAll.checked = true;
+  els.pageNumberScopeSelected.checked = false;
+}
+
 function updateDocInfo() {
   const activeCount = state.numPages - state.deletedPages.size;
   let text =
@@ -456,6 +693,7 @@ function updateDocInfo() {
     (f) => f.type !== 'PDFButton' && f.type !== 'PDFSignature'
   ).length;
   if (fillableCount) text += ` ${fillableCount} form field(s) detected.`;
+  if (state.insertions.length) text += ` +${state.insertions.length} inserted page(s).`;
   els.docInfo.textContent = text;
 }
 
@@ -465,83 +703,213 @@ function updateFlattenRowVisibility() {
 
 // --- Thumbnail rendering -----------------------------------------------
 
+let dragSourceIndex = null; // original page index currently being drag-reordered
+
 async function renderThumbnails() {
   els.grid.innerHTML = '';
   els.emptyState.style.display = 'none';
 
-  for (let pageNum = 1; pageNum <= state.numPages; pageNum++) {
-    const pageIndex = pageNum - 1;
-    const page = await state.pdfjsDoc.getPage(pageNum);
-    const viewport = page.getViewport({ scale: 0.28 });
+  for (const ins of state.insertions.filter((i) => i.anchor === 'start')) {
+    els.grid.appendChild(await buildInsertionCard(ins));
+  }
 
-    const canvas = document.createElement('canvas');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    const ctx = canvas.getContext('2d');
-    await page.render({ canvasContext: ctx, viewport }).promise;
+  for (const pageIndex of state.pageOrder) {
+    els.grid.appendChild(await buildPageCard(pageIndex));
+    for (const ins of state.insertions.filter((i) => i.anchor && i.anchor.after === pageIndex)) {
+      els.grid.appendChild(await buildInsertionCard(ins));
+    }
+  }
 
-    const card = document.createElement('div');
-    card.className = 'thumb-card';
-    card.dataset.pageIndex = String(pageIndex);
-
-    const checkLabel = document.createElement('label');
-    checkLabel.className = 'select-check';
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.title = 'Target this page for the Rotate Selected action';
-    checkbox.addEventListener('change', (e) => {
-      e.stopPropagation();
-      if (checkbox.checked) state.selectedPages.add(pageIndex);
-      else state.selectedPages.delete(pageIndex);
-      card.classList.toggle('selected', checkbox.checked);
-      refreshAllCardVisuals();
-      updateApplyHint();
-    });
-    checkLabel.addEventListener('click', (e) => e.stopPropagation());
-    checkLabel.appendChild(checkbox);
-
-    const tag = document.createElement('div');
-    tag.className = 'status-tag';
-    tag.hidden = true;
-
-    const badge = document.createElement('div');
-    badge.className = 'rot-badge';
-
-    const fieldBadge = document.createElement('div');
-    fieldBadge.className = 'field-badge';
-
-    const wmBadge = document.createElement('div');
-    wmBadge.className = 'wm-badge';
-    wmBadge.textContent = 'WM';
-
-    const label = document.createElement('div');
-    label.className = 'page-label';
-    label.textContent = `Page ${pageNum}`;
-
-    card.appendChild(checkLabel);
-    card.appendChild(tag);
-    card.appendChild(badge);
-    card.appendChild(fieldBadge);
-    card.appendChild(wmBadge);
-    card.appendChild(canvas);
-    card.appendChild(label);
-
-    card.addEventListener('click', () => {
-      if (state.activeTool === 'add-field') {
-        openFieldDesigner(pageIndex);
-        return;
-      }
-      if (state.stagedDeleted.has(pageIndex)) state.stagedDeleted.delete(pageIndex);
-      else state.stagedDeleted.add(pageIndex);
-      refreshAllCardVisuals();
-      updateKeepInputFromStaged();
-      updateApplyHint();
-    });
-
-    els.grid.appendChild(card);
+  for (const ins of state.insertions.filter((i) => i.anchor === 'end')) {
+    els.grid.appendChild(await buildInsertionCard(ins));
   }
 
   refreshAllCardVisuals();
+}
+
+async function buildPageCard(pageIndex) {
+  const pageNum = pageIndex + 1;
+  const page = await state.pdfjsDoc.getPage(pageNum);
+  const baseViewport = page.getViewport({ scale: 1 });
+  const thumbScale = 0.28;
+  const viewport = page.getViewport({ scale: thumbScale });
+
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const ctx = canvas.getContext('2d');
+  await page.render({ canvasContext: ctx, viewport }).promise;
+
+  // Bake staged redaction boxes directly into the thumbnail as visual feedback.
+  const boxesForPage = state.redactions.filter((r) => r.pageIndex === pageIndex);
+  if (boxesForPage.length) {
+    ctx.fillStyle = 'rgba(0,0,0,0.85)';
+    boxesForPage.forEach((r) => {
+      const x = r.rect.x * thumbScale;
+      const y = (baseViewport.height - r.rect.y - r.rect.height) * thumbScale;
+      ctx.fillRect(x, y, r.rect.width * thumbScale, r.rect.height * thumbScale);
+    });
+  }
+
+  const card = document.createElement('div');
+  card.className = 'thumb-card';
+  card.dataset.pageIndex = String(pageIndex);
+  card.draggable = true;
+
+  const checkLabel = document.createElement('label');
+  checkLabel.className = 'select-check';
+  const checkbox = document.createElement('input');
+  checkbox.type = 'checkbox';
+  checkbox.title = 'Target this page for the Rotate Selected action';
+  checkbox.addEventListener('change', (e) => {
+    e.stopPropagation();
+    if (checkbox.checked) state.selectedPages.add(pageIndex);
+    else state.selectedPages.delete(pageIndex);
+    card.classList.toggle('selected', checkbox.checked);
+    refreshAllCardVisuals();
+    updateApplyHint();
+  });
+  checkLabel.addEventListener('click', (e) => e.stopPropagation());
+  checkLabel.appendChild(checkbox);
+
+  const tag = document.createElement('div');
+  tag.className = 'status-tag';
+  tag.hidden = true;
+
+  const badge = document.createElement('div');
+  badge.className = 'rot-badge';
+
+  const fieldBadge = document.createElement('div');
+  fieldBadge.className = 'field-badge';
+
+  const wmBadge = document.createElement('div');
+  wmBadge.className = 'wm-badge';
+  wmBadge.textContent = 'WM';
+
+  const label = document.createElement('div');
+  label.className = 'page-label';
+  label.textContent = `Page ${pageNum}`;
+
+  card.appendChild(checkLabel);
+  card.appendChild(tag);
+  card.appendChild(badge);
+  card.appendChild(fieldBadge);
+  card.appendChild(wmBadge);
+  card.appendChild(canvas);
+  card.appendChild(label);
+
+  card.addEventListener('click', () => {
+    if (state.activeTool === 'add-field') {
+      openPageDesigner(pageIndex, 'field');
+      return;
+    }
+    if (state.activeTool === 'redact') {
+      openPageDesigner(pageIndex, 'redact');
+      return;
+    }
+    if (state.stagedDeleted.has(pageIndex)) state.stagedDeleted.delete(pageIndex);
+    else state.stagedDeleted.add(pageIndex);
+    refreshAllCardVisuals();
+    updateKeepInputFromStaged();
+    updateApplyHint();
+  });
+
+  wireDragEvents(card, pageIndex);
+
+  return card;
+}
+
+async function buildInsertionCard(ins) {
+  const card = document.createElement('div');
+  card.className = 'thumb-card insertion';
+  card.dataset.insertionId = ins.id;
+
+  const scale = 0.28;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(ins.width * scale));
+  canvas.height = Math.max(1, Math.round(ins.height * scale));
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  if (ins.type === 'image' && ins.imageBytes) {
+    try {
+      const bitmap = await createImageBitmap(new Blob([ins.imageBytes]));
+      const s = Math.min(canvas.width / bitmap.width, canvas.height / bitmap.height);
+      const w = bitmap.width * s;
+      const h = bitmap.height * s;
+      ctx.drawImage(bitmap, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+    } catch (err) {
+      console.error('Failed to preview inserted image', err);
+    }
+  } else {
+    ctx.strokeStyle = '#c9ccd1';
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(4, 4, canvas.width - 8, canvas.height - 8);
+  }
+
+  const rm = document.createElement('button');
+  rm.className = 'designer-box-remove';
+  rm.textContent = '×';
+  rm.title = 'Remove this inserted page';
+  rm.addEventListener('click', (e) => {
+    e.stopPropagation();
+    state.insertions = state.insertions.filter((i) => i.id !== ins.id);
+    renderThumbnails();
+    persistSession();
+    setStatus('Inserted page removed.');
+  });
+
+  const label = document.createElement('div');
+  label.className = 'page-label';
+  label.textContent = ins.type === 'image' ? 'Image page' : 'Blank page';
+
+  card.appendChild(rm);
+  card.appendChild(canvas);
+  card.appendChild(label);
+  return card;
+}
+
+function wireDragEvents(card, pageIndex) {
+  card.addEventListener('dragstart', (e) => {
+    if (state.activeTool === 'add-field' || state.activeTool === 'redact' || e.target.closest('.select-check')) {
+      e.preventDefault();
+      return;
+    }
+    dragSourceIndex = pageIndex;
+    e.dataTransfer.effectAllowed = 'move';
+    card.classList.add('dragging');
+  });
+  card.addEventListener('dragend', () => {
+    card.classList.remove('dragging');
+    dragSourceIndex = null;
+    els.grid.querySelectorAll('.drag-over').forEach((c) => c.classList.remove('drag-over'));
+  });
+  card.addEventListener('dragover', (e) => {
+    if (dragSourceIndex === null || dragSourceIndex === pageIndex) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    card.classList.add('drag-over');
+  });
+  card.addEventListener('dragleave', () => card.classList.remove('drag-over'));
+  card.addEventListener('drop', (e) => {
+    e.preventDefault();
+    card.classList.remove('drag-over');
+    if (dragSourceIndex === null || dragSourceIndex === pageIndex) return;
+    reorderPages(dragSourceIndex, pageIndex);
+  });
+}
+
+function reorderPages(fromIdx, toIdx) {
+  const order = state.pageOrder;
+  const fromPos = order.indexOf(fromIdx);
+  const toPos = order.indexOf(toIdx);
+  if (fromPos === -1 || toPos === -1 || fromPos === toPos) return;
+  order.splice(fromPos, 1);
+  order.splice(toPos, 0, fromIdx);
+  renderThumbnails();
+  persistSession();
+  setStatus('Pages reordered.');
 }
 
 function computePendingAngle(idx) {
@@ -555,7 +923,7 @@ function computePendingAngle(idx) {
 }
 
 function refreshAllCardVisuals() {
-  els.grid.querySelectorAll('.thumb-card').forEach((card) => {
+  els.grid.querySelectorAll('.thumb-card[data-page-index]').forEach((card) => {
     const idx = Number(card.dataset.pageIndex);
     const tag = card.querySelector('.status-tag');
     const badge = card.querySelector('.rot-badge');
@@ -616,7 +984,11 @@ function setActiveTool(tool) {
   els.formFieldsSection.style.display = state.activeTool === 'fill-form' ? 'block' : 'none';
   els.addFieldSection.style.display = state.activeTool === 'add-field' ? 'block' : 'none';
   els.watermarkSection.style.display = state.activeTool === 'watermark' ? 'block' : 'none';
+  els.redactSection.style.display = state.activeTool === 'redact' ? 'block' : 'none';
+  els.insertPageSection.style.display = state.activeTool === 'insert-page' ? 'block' : 'none';
+  els.pageNumberSection.style.display = state.activeTool === 'page-numbers' ? 'block' : 'none';
   if (state.activeTool === 'fill-form') renderFormFieldsPanel();
+  if (state.activeTool === 'insert-page') populateInsertPositionOptions();
   refreshAllCardVisuals();
   updateApplyHint();
 }
@@ -699,6 +1071,90 @@ function buildFieldRow(f) {
   return row;
 }
 
+// --- Insert Page panel -------------------------------------------------
+
+function populateInsertPositionOptions() {
+  const sel = els.insertPosition;
+  const previous = sel.value;
+  sel.innerHTML = '';
+  const optStart = document.createElement('option');
+  optStart.value = 'start';
+  optStart.textContent = 'At the start';
+  sel.appendChild(optStart);
+  for (const idx of state.pageOrder) {
+    const opt = document.createElement('option');
+    opt.value = `after:${idx}`;
+    opt.textContent = `After page ${idx + 1}`;
+    sel.appendChild(opt);
+  }
+  const optEnd = document.createElement('option');
+  optEnd.value = 'end';
+  optEnd.textContent = 'At the end';
+  sel.appendChild(optEnd);
+  sel.value = [...sel.options].some((o) => o.value === previous) ? previous : 'end';
+}
+
+function parseInsertPosition(value) {
+  if (value === 'start' || value === 'end') return value;
+  const [, idxStr] = value.split(':');
+  return { after: Number(idxStr) };
+}
+
+async function insertPage() {
+  const type = els.insertTypeImage.checked ? 'image' : 'blank';
+  const anchor = parseInsertPosition(els.insertPosition.value);
+
+  let width = 612;
+  let height = 792; // US Letter fallback
+  const refIdx = anchor === 'start' ? state.pageOrder[0]
+    : anchor === 'end' ? state.pageOrder[state.pageOrder.length - 1]
+    : anchor.after;
+  if (refIdx !== undefined && state.pdfjsDoc) {
+    try {
+      const p = await state.pdfjsDoc.getPage(refIdx + 1);
+      const vp = p.getViewport({ scale: 1 });
+      width = vp.width;
+      height = vp.height;
+    } catch (err) {
+      // keep Letter fallback
+    }
+  }
+
+  let imageBytes = null;
+  let imageFormat = null;
+  if (type === 'image') {
+    const file = els.insertImageFile.files[0];
+    if (!file) {
+      setStatus('Choose an image file first.', true);
+      return;
+    }
+    if (file.type !== 'image/png' && file.type !== 'image/jpeg') {
+      setStatus('Only PNG and JPEG images are supported.', true);
+      return;
+    }
+    imageFormat = file.type === 'image/png' ? 'png' : 'jpg';
+    imageBytes = new Uint8Array(await file.arrayBuffer());
+  }
+
+  state.insertions.push({
+    id: `ins${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
+    anchor,
+    type,
+    width,
+    height,
+    imageBytes,
+    imageFormat,
+  });
+
+  els.insertImageFile.value = '';
+  await renderThumbnails();
+  populateInsertPositionOptions();
+  await persistSession();
+  updateDocInfo();
+  updateApplyHint();
+  setStatus(type === 'blank' ? 'Blank page inserted.' : 'Image page inserted.');
+}
+
 function updateApplyHint() {
   const tool = state.activeTool;
   let hint = 'Select an action above, then press Apply.';
@@ -737,12 +1193,32 @@ function updateApplyHint() {
       hint = `Ready to stamp "${text}" on ${scope}.`;
       canApply = !els.watermarkScopeSelected.checked || state.selectedPages.size > 0;
     }
+  } else if (tool === 'redact') {
+    hint = state.redactions.length
+      ? `${state.redactions.length} redaction box(es) staged. Click a page to add more, then press Apply.`
+      : 'Click a page thumbnail below to open the redaction designer.';
+    canApply = true;
+  } else if (tool === 'insert-page') {
+    hint = `${state.insertions.length} inserted page(s) so far. Configure above and press Insert to add one.`;
+    canApply = true;
+  } else if (tool === 'page-numbers') {
+    const template = els.pageNumberTemplate.value.trim();
+    if (!template) {
+      hint = state.pageNumbering
+        ? 'Template is empty — press Apply to remove page numbers.'
+        : 'Enter a template above, then press Apply.';
+      canApply = !!state.pageNumbering;
+    } else {
+      const scope = els.pageNumberScopeSelected.checked ? `${state.selectedPages.size} selected page(s)` : 'all pages';
+      hint = `Ready to number ${scope} using "${template}".`;
+      canApply = !els.pageNumberScopeSelected.checked || state.selectedPages.size > 0;
+    }
   } else if (tool === 'split') {
-    const active = state.numPages - state.deletedPages.size;
+    const active = activePageCount();
     hint = `Ready to split ${active} active page(s) into separate PDFs.`;
     canApply = active > 0;
   } else if (tool === 'export') {
-    const active = state.numPages - state.deletedPages.size;
+    const active = activePageCount();
     hint = `Ready to export a PDF with ${active} active page(s).`;
     canApply = active > 0;
   }
@@ -804,6 +1280,32 @@ async function applyCurrentTool() {
         setStatus(`Watermark "${text}" staged on ${pageIndices.length} page(s).`);
       }
       refreshAllCardVisuals();
+    } else if (tool === 'redact') {
+      await persistSession();
+      setStatus(`Saved ${state.redactions.length} redaction box(es).`);
+    } else if (tool === 'insert-page') {
+      await persistSession();
+      setStatus(`${state.insertions.length} inserted page(s) confirmed.`);
+    } else if (tool === 'page-numbers') {
+      const template = els.pageNumberTemplate.value.trim();
+      if (!template) {
+        state.pageNumbering = null;
+        await persistSession();
+        setStatus('Page numbers removed.');
+      } else {
+        const pageIndices = els.pageNumberScopeSelected.checked
+          ? [...state.selectedPages]
+          : Array.from({ length: state.numPages }, (_, i) => i);
+        state.pageNumbering = {
+          template,
+          position: els.pageNumberPosition.value,
+          fontSize: Math.max(6, Math.min(36, Number(els.pageNumberSize.value) || 11)),
+          color: els.pageNumberColor.value,
+          pageIndices,
+        };
+        await persistSession();
+        setStatus(`Page numbers staged on ${pageIndices.length} page(s).`);
+      }
     } else if (tool === 'split') {
       await splitDocument();
     } else if (tool === 'export') {
@@ -829,11 +1331,123 @@ function commitRotation(indices, angle) {
   refreshAllCardVisuals();
 }
 
+// --- Page count / ordering helpers --------------------------------------
+
+function activePageCount() {
+  const activeOriginal = state.pageOrder.filter((idx) => !state.deletedPages.has(idx)).length;
+  return activeOriginal + state.insertions.length;
+}
+
+// Maps each active original page index to its 1-based position in the final
+// exported document, accounting for deletions and interleaved insertions.
+function computeFinalPositionMap() {
+  const map = new Map();
+  let counter = state.insertions.filter((i) => i.anchor === 'start').length;
+  for (const idx of state.pageOrder) {
+    if (state.deletedPages.has(idx)) continue;
+    counter += 1;
+    map.set(idx, counter);
+    counter += state.insertions.filter((i) => i.anchor && i.anchor.after === idx).length;
+  }
+  return map;
+}
+
 // --- pdf-lib helpers -----------------------------------------------------
+
+function hexToRgb01(hex) {
+  const clean = (hex || '#808080').replace('#', '');
+  const r = parseInt(clean.slice(0, 2), 16) / 255;
+  const g = parseInt(clean.slice(2, 4), 16) / 255;
+  const b = parseInt(clean.slice(4, 6), 16) / 255;
+  return PDFLib.rgb(r || 0, g || 0, b || 0);
+}
+
+function drawWatermarkOnPage(page, font, wm, color) {
+  const { width, height } = page.getSize();
+  const drawOpts = {
+    font,
+    size: wm.fontSize,
+    color,
+    opacity: wm.opacity,
+    rotate: PDFLib.degrees(wm.rotation),
+  };
+  const textWidth = font.widthOfTextAtSize(wm.text, wm.fontSize);
+  if (!wm.tile) {
+    page.drawText(wm.text, { ...drawOpts, x: (width - textWidth) / 2, y: height / 2 });
+    return;
+  }
+  const stepX = textWidth + 80;
+  const stepY = wm.fontSize + 80;
+  // Overshoot the page bounds on every side since rotating each stamp expands
+  // its effective footprint beyond the unrotated text box.
+  for (let y = -height; y < height * 2; y += stepY) {
+    for (let x = -width; x < width * 2; x += stepX) {
+      page.drawText(wm.text, { ...drawOpts, x, y });
+    }
+  }
+}
+
+function drawPageNumberOnPage(page, font, pn, color, pageNum, totalPages) {
+  const text = pn.template.replace(/\{page\}/g, String(pageNum)).replace(/\{pages\}/g, String(totalPages));
+  if (!text) return;
+  const { width, height } = page.getSize();
+  const size = pn.fontSize;
+  const textWidth = font.widthOfTextAtSize(text, size);
+  const margin = 24;
+  let x;
+  if (pn.position.endsWith('left')) x = margin;
+  else if (pn.position.endsWith('right')) x = width - textWidth - margin;
+  else x = (width - textWidth) / 2;
+  const y = pn.position.startsWith('top') ? height - margin : margin;
+  page.drawText(text, { x, y, size, font, color });
+}
+
+async function rasterizePageWithRedactions(pageIndex, pdfHeight, rects) {
+  const page = await state.pdfjsDoc.getPage(pageIndex + 1);
+  const scale = 2; // decent resolution for the flattened raster replacing this page
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const ctx = canvas.getContext('2d');
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  ctx.fillStyle = '#000000';
+  rects.forEach((r) => {
+    const x = r.x * scale;
+    const y = (pdfHeight - r.y - r.height) * scale;
+    ctx.fillRect(x, y, r.width * scale, r.height * scale);
+  });
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+  const buf = await blob.arrayBuffer();
+  return new Uint8Array(buf);
+}
+
+// Replaces each redacted page with a flattened raster image (boxes baked in),
+// so the underlying text/vector content is actually gone, not just covered —
+// any form fields or annotations on that page are removed along with it.
+async function applyRedactionsToDoc(pdfDoc, pages) {
+  const byPage = new Map();
+  state.redactions.forEach((r) => {
+    if (!byPage.has(r.pageIndex)) byPage.set(r.pageIndex, []);
+    byPage.get(r.pageIndex).push(r.rect);
+  });
+  for (const [idx, rects] of byPage) {
+    const oldPage = pages[idx];
+    if (!oldPage) continue;
+    const { width, height } = oldPage.getSize();
+    const rotationAngle = oldPage.getRotation().angle;
+    const pngBytes = await rasterizePageWithRedactions(idx, height, rects);
+    const img = await pdfDoc.embedPng(pngBytes);
+    pdfDoc.removePage(idx);
+    const newPage = pdfDoc.insertPage(idx, [width, height]);
+    newPage.setRotation(PDFLib.degrees(rotationAngle));
+    newPage.drawImage(img, { x: 0, y: 0, width, height });
+  }
+}
 
 async function buildEditedDocument() {
   const pdfDoc = await PDFLib.PDFDocument.load(state.originalBytes.slice());
-  const pages = pdfDoc.getPages();
+  let pages = pdfDoc.getPages();
   pages.forEach((page, idx) => {
     const addedAngle = state.rotations.get(idx) || 0;
     if (addedAngle) {
@@ -893,6 +1507,11 @@ async function buildEditedDocument() {
     }
   }
 
+  if (state.redactions.length) {
+    await applyRedactionsToDoc(pdfDoc, pages);
+    pages = pdfDoc.getPages(); // redacted pages were replaced; refresh references
+  }
+
   if (state.watermark && state.watermark.text && state.watermark.pageIndices.length) {
     try {
       const font = await pdfDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
@@ -906,73 +1525,171 @@ async function buildEditedDocument() {
     }
   }
 
+  if (state.pageNumbering && state.pageNumbering.template.trim() && state.pageNumbering.pageIndices.length) {
+    try {
+      const font = await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
+      const color = hexToRgb01(state.pageNumbering.color);
+      const totalPages = activePageCount();
+      const posMap = computeFinalPositionMap();
+      for (const idx of state.pageNumbering.pageIndices) {
+        if (state.deletedPages.has(idx)) continue;
+        const page = pages[idx];
+        const pageNum = posMap.get(idx);
+        if (page && pageNum) drawPageNumberOnPage(page, font, state.pageNumbering, color, pageNum, totalPages);
+      }
+    } catch (err) {
+      console.error('Failed to draw page numbers', err);
+    }
+  }
+
   return pdfDoc;
 }
 
-function hexToRgb01(hex) {
-  const clean = (hex || '#808080').replace('#', '');
-  const r = parseInt(clean.slice(0, 2), 16) / 255;
-  const g = parseInt(clean.slice(2, 4), 16) / 255;
-  const b = parseInt(clean.slice(4, 6), 16) / 255;
-  return PDFLib.rgb(r || 0, g || 0, b || 0);
+async function appendInsertionPage(doc, ins) {
+  const page = doc.addPage([ins.width, ins.height]);
+  if (ins.type === 'image' && ins.imageBytes) {
+    const img = ins.imageFormat === 'jpg' ? await doc.embedJpg(ins.imageBytes) : await doc.embedPng(ins.imageBytes);
+    const scale = Math.min(ins.width / img.width, ins.height / img.height);
+    const w = img.width * scale;
+    const h = img.height * scale;
+    page.drawImage(img, { x: (ins.width - w) / 2, y: (ins.height - h) / 2, width: w, height: h });
+  }
 }
 
-function drawWatermarkOnPage(page, font, wm, color) {
-  const { width, height } = page.getSize();
-  const drawOpts = {
-    font,
-    size: wm.fontSize,
-    color,
-    opacity: wm.opacity,
-    rotate: PDFLib.degrees(wm.rotation),
-  };
-  if (!wm.tile) {
-    const textWidth = font.widthOfTextAtSize(wm.text, wm.fontSize);
-    page.drawText(wm.text, { ...drawOpts, x: (width - textWidth) / 2, y: height / 2 });
-    return;
+// Builds the final page sequence: order + insertions + deletions, from a
+// source document that already has rotations/forms/redactions/watermark/
+// page-numbers baked in.
+async function assembleFinalDocument(sourceDoc) {
+  const finalDoc = await PDFLib.PDFDocument.create();
+
+  for (const ins of state.insertions.filter((i) => i.anchor === 'start')) {
+    await appendInsertionPage(finalDoc, ins);
   }
-  const textWidth = font.widthOfTextAtSize(wm.text, wm.fontSize);
-  const stepX = textWidth + 80;
-  const stepY = wm.fontSize + 80;
-  // Overshoot the page bounds on every side since rotating each stamp expands
-  // its effective footprint beyond the unrotated text box.
-  for (let y = -height; y < height * 2; y += stepY) {
-    for (let x = -width; x < width * 2; x += stepX) {
-      page.drawText(wm.text, { ...drawOpts, x, y });
+
+  for (const idx of state.pageOrder) {
+    if (state.deletedPages.has(idx)) continue;
+    const [copied] = await finalDoc.copyPages(sourceDoc, [idx]);
+    finalDoc.addPage(copied);
+    for (const ins of state.insertions.filter((i) => i.anchor && i.anchor.after === idx)) {
+      await appendInsertionPage(finalDoc, ins);
     }
   }
+
+  for (const ins of state.insertions.filter((i) => i.anchor === 'end')) {
+    await appendInsertionPage(finalDoc, ins);
+  }
+
+  return finalDoc;
+}
+
+// Reordering/inserting pages requires rebuilding the document via copyPages
+// into a fresh PDFDocument, which drops the root-level AcroForm structure for
+// any unflattened form fields (copyPages only carries the page's own widget
+// annotations, not the field dictionary linking them together) — a known
+// pdf-lib limitation, not something we can avoid once a full reassembly is
+// needed. When the page order is untouched and nothing was inserted, plain
+// in-place page removal on the same document avoids that entirely, so forms
+// export correctly for the common case.
+function needsReassembly() {
+  const isIdentityOrder = state.pageOrder.every((idx, i) => idx === i);
+  return !isIdentityOrder || state.insertions.length > 0;
+}
+
+async function finalizeDocument(sourceDoc) {
+  if (!needsReassembly()) {
+    const indicesToRemove = [...state.deletedPages].sort((a, b) => b - a);
+    for (const idx of indicesToRemove) sourceDoc.removePage(idx);
+    return sourceDoc;
+  }
+  return assembleFinalDocument(sourceDoc);
 }
 
 async function exportEditedPdf() {
-  setStatus('Building edited PDF…');
-  const pdfDoc = await buildEditedDocument();
-  const indicesToRemove = [...state.deletedPages].sort((a, b) => b - a);
-  if (indicesToRemove.length === pdfDoc.getPageCount()) {
-    throw new Error('Cannot export: every page is marked for removal.');
+  if (activePageCount() === 0) {
+    throw new Error('Cannot export: no active pages.');
   }
-  for (const idx of indicesToRemove) pdfDoc.removePage(idx);
-  const bytes = await pdfDoc.save();
+  setStatus('Building edited PDF…');
+  const sourceDoc = await buildEditedDocument();
+  const finalDoc = await finalizeDocument(sourceDoc);
+  const bytes = await finalDoc.save();
   await downloadBytes(bytes, `${state.baseName}-edited.pdf`, 'application/pdf');
-  setStatus(`Exported ${pdfDoc.getPageCount()} page(s) to ${state.baseName}-edited.pdf`);
+  setStatus(`Exported ${finalDoc.getPageCount()} page(s) to ${state.baseName}-edited.pdf`);
 }
 
 async function splitDocument() {
-  const sourceDoc = await buildEditedDocument();
-  const activeIndices = [];
-  for (let i = 0; i < state.numPages; i++) {
-    if (!state.deletedPages.has(i)) activeIndices.push(i);
+  if (activePageCount() === 0) {
+    throw new Error('Cannot split: no active pages.');
   }
+  const sourceDoc = await buildEditedDocument();
+  const finalDoc = await assembleFinalDocument(sourceDoc);
+  const count = finalDoc.getPageCount();
   let done = 0;
-  for (const idx of activeIndices) {
-    setStatus(`Splitting… (${done + 1}/${activeIndices.length})`);
+  for (let i = 0; i < count; i++) {
+    setStatus(`Splitting… (${done + 1}/${count})`);
     const newDoc = await PDFLib.PDFDocument.create();
-    const [copied] = await newDoc.copyPages(sourceDoc, [idx]);
+    const [copied] = await newDoc.copyPages(finalDoc, [i]);
     newDoc.addPage(copied);
     const bytes = await newDoc.save();
-    await downloadBytes(bytes, `${state.baseName}-page-${idx + 1}.pdf`, 'application/pdf');
+    await downloadBytes(bytes, `${state.baseName}-page-${i + 1}.pdf`, 'application/pdf');
     done++;
   }
   setStatus(`Split complete: ${done} file(s) downloaded.`);
+}
+
+// --- Merge ---------------------------------------------------------------
+
+async function mergeFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+  setBusy(true);
+  setStatus('Merging PDFs…');
+  try {
+    await saveCurrentToRecentIfAny();
+    const mergedDoc = await PDFLib.PDFDocument.create();
+
+    if (state.originalBytes) {
+      const sourceDoc = await buildEditedDocument();
+      const finalDoc = await assembleFinalDocument(sourceDoc);
+      const indices = finalDoc.getPages().map((_, i) => i);
+      if (indices.length) {
+        const copied = await mergedDoc.copyPages(finalDoc, indices);
+        copied.forEach((p) => mergedDoc.addPage(p));
+      }
+    }
+
+    let skipped = 0;
+    for (const file of files) {
+      if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') {
+        skipped++;
+        continue;
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const doc = await PDFLib.PDFDocument.load(bytes, { ignoreEncryption: true });
+      const indices = doc.getPages().map((_, i) => i);
+      const copied = await mergedDoc.copyPages(doc, indices);
+      copied.forEach((p) => mergedDoc.addPage(p));
+    }
+
+    if (mergedDoc.getPageCount() === 0) {
+      setStatus('Nothing to merge — no valid PDF pages found.', true);
+      return;
+    }
+
+    const mergedBytes = await mergedDoc.save();
+    const mergedName = state.originalBytes
+      ? `${state.baseName}-merged`
+      : `${sanitizeBaseName(files[0].name)}${files.length > 1 ? '-merged' : ''}`;
+    await loadBytes(mergedBytes, mergedName);
+    setStatus(
+      `Merged into a ${mergedDoc.getPageCount()}-page document.` +
+        (skipped ? ` Skipped ${skipped} non-PDF file(s).` : '')
+    );
+  } catch (err) {
+    console.error(err);
+    setStatus(`Merge failed: ${err.message}`, true);
+  } finally {
+    setBusy(false);
+  }
 }
 
 // --- Reset -----------------------------------------------------------------
@@ -989,6 +1706,7 @@ async function resetEverything() {
   state.stagedDeleted = new Set();
   state.selectedPages = new Set();
   state.rotations = new Map();
+  state.pageOrder = [];
   state.activeTool = null;
   state.hasAcroForm = false;
   state.formFieldsMeta = [];
@@ -996,6 +1714,9 @@ async function resetEverything() {
   state.newFields = [];
   state.flattenForm = false;
   state.watermark = null;
+  state.redactions = [];
+  state.insertions = [];
+  state.pageNumbering = null;
 
   await clearSession();
 
@@ -1008,6 +1729,9 @@ async function resetEverything() {
   els.formFieldsSection.style.display = 'none';
   els.addFieldSection.style.display = 'none';
   els.watermarkSection.style.display = 'none';
+  els.redactSection.style.display = 'none';
+  els.insertPageSection.style.display = 'none';
+  els.pageNumberSection.style.display = 'none';
   els.flattenRow.style.display = 'none';
   els.fieldDesignerOverlay.style.display = 'none';
   els.summarizeRow.style.display = 'none';
@@ -1016,22 +1740,28 @@ async function resetEverything() {
   els.summaryStatus.textContent = '';
   els.keepInput.value = '';
   els.fileInput.value = '';
+  els.mergeFileInput.value = '';
   toolButtons.forEach((btn) => btn.classList.remove('active'));
   updateApplyHint();
   setStatus('Reset. Load a PDF to start again.');
 }
 
-// --- Field designer (Add Field tool) ---------------------------------------
+// --- Page designer (Add Field / Redact tools share this overlay) -----------
 
-let designerState = null; // { pageIndex, scale, pdfWidth, pdfHeight }
-let dragRect = null;      // { x1, y1, x2, y2 } in canvas CSS pixels, while dragging
+let designerMode = 'field'; // 'field' | 'redact'
+let designerState = null;   // { pageIndex, scale, pdfWidth, pdfHeight }
+let dragRect = null;        // { x1, y1, x2, y2 } in canvas CSS pixels, while dragging
 let pendingScreenRect = null;
 
-async function openFieldDesigner(pageIndex) {
+async function openPageDesigner(pageIndex, mode) {
+  designerMode = mode;
   designerState = null;
   els.designerPageLabel.textContent = `Page ${pageIndex + 1}`;
   els.designerForm.style.display = 'none';
   els.designerBoxes.innerHTML = '';
+  els.designerHint.textContent = mode === 'redact'
+    ? "Drag on the page to black out a region. Click a box's × to remove it."
+    : "Drag on the page to draw a new field. Amber boxes are existing fields; blue boxes are new ones you've staged.";
   els.fieldDesignerOverlay.style.display = 'flex';
 
   const page = await state.pdfjsDoc.getPage(pageIndex + 1);
@@ -1057,13 +1787,18 @@ function renderDesignerBoxes() {
   els.designerBoxes.style.width = `${els.designerCanvas.width}px`;
   els.designerBoxes.style.height = `${els.designerCanvas.height}px`;
 
-  state.formFieldsMeta
-    .filter((f) => f.pageIndex === pageIndex && f.rect)
-    .forEach((f) => els.designerBoxes.appendChild(makeDesignerBox(f.rect, scale, pdfHeight, f.name, false)));
-
-  state.newFields
-    .filter((f) => f.pageIndex === pageIndex)
-    .forEach((f) => els.designerBoxes.appendChild(makeDesignerBox(f.rect, scale, pdfHeight, f.name, true, f.id)));
+  if (designerMode === 'field') {
+    state.formFieldsMeta
+      .filter((f) => f.pageIndex === pageIndex && f.rect)
+      .forEach((f) => els.designerBoxes.appendChild(makeDesignerBox(f.rect, scale, pdfHeight, f.name, false)));
+    state.newFields
+      .filter((f) => f.pageIndex === pageIndex)
+      .forEach((f) => els.designerBoxes.appendChild(makeDesignerBox(f.rect, scale, pdfHeight, f.name, true, f.id)));
+  } else if (designerMode === 'redact') {
+    state.redactions
+      .filter((r) => r.pageIndex === pageIndex)
+      .forEach((r) => els.designerBoxes.appendChild(makeRedactBox(r.rect, scale, pdfHeight, r.id)));
+  }
 }
 
 function makeDesignerBox(rect, scale, pdfHeight, name, removable, id) {
@@ -1094,6 +1829,28 @@ function makeDesignerBox(rect, scale, pdfHeight, name, removable, id) {
     });
     box.appendChild(rm);
   }
+  return box;
+}
+
+function makeRedactBox(rect, scale, pdfHeight, id) {
+  const box = document.createElement('div');
+  box.className = 'designer-box redact';
+  box.style.left = `${rect.x * scale}px`;
+  box.style.top = `${(pdfHeight - rect.y - rect.height) * scale}px`;
+  box.style.width = `${rect.width * scale}px`;
+  box.style.height = `${rect.height * scale}px`;
+
+  const rm = document.createElement('button');
+  rm.className = 'designer-box-remove';
+  rm.textContent = '×';
+  rm.title = 'Remove this redaction';
+  rm.addEventListener('click', (e) => {
+    e.stopPropagation();
+    state.redactions = state.redactions.filter((r) => r.id !== id);
+    renderDesignerBoxes();
+    persistSession();
+  });
+  box.appendChild(rm);
   return box;
 }
 
@@ -1144,6 +1901,26 @@ els.designerCanvasWrap.addEventListener('pointerup', () => {
   const width = Math.abs(x2 - x1);
   const height = Math.abs(y2 - y1);
   if (width < 6 || height < 6) return; // ignore accidental clicks/taps
+
+  if (designerMode === 'redact') {
+    const { scale, pdfHeight } = designerState;
+    const rect = {
+      x: left / scale,
+      y: pdfHeight - (top + height) / scale,
+      width: width / scale,
+      height: height / scale,
+    };
+    state.redactions.push({
+      id: `rx${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
+      pageIndex: designerState.pageIndex,
+      rect,
+    });
+    renderDesignerBoxes();
+    persistSession();
+    setStatus('Redaction box added.');
+    return;
+  }
+
   pendingScreenRect = { left, top, width, height };
   els.designerFieldName.value = '';
   els.designerFieldType.value = 'text';
@@ -1212,7 +1989,9 @@ els.designerCancel.addEventListener('click', () => {
 });
 els.designerClose.addEventListener('click', () => {
   els.fieldDesignerOverlay.style.display = 'none';
+  const wasRedact = designerMode === 'redact';
   designerState = null;
+  if (wasRedact) renderThumbnails();
 });
 
 els.watermarkOpacity.addEventListener('input', () => {
@@ -1222,6 +2001,17 @@ els.watermarkOpacity.addEventListener('input', () => {
   el.addEventListener('input', updateApplyHint);
   el.addEventListener('change', updateApplyHint);
 });
+[els.pageNumberTemplate, els.pageNumberScopeAll, els.pageNumberScopeSelected].forEach((el) => {
+  el.addEventListener('input', updateApplyHint);
+  el.addEventListener('change', updateApplyHint);
+});
+
+[els.insertTypeBlank, els.insertTypeImage].forEach((el) => {
+  el.addEventListener('change', () => {
+    els.insertImageRow.style.display = els.insertTypeImage.checked ? 'flex' : 'none';
+  });
+});
+els.btnInsertPage.addEventListener('click', insertPage);
 
 els.flattenCheckbox.addEventListener('change', () => {
   state.flattenForm = els.flattenCheckbox.checked;
@@ -1334,6 +2124,12 @@ els.fileInput.addEventListener('change', () => loadFile(els.fileInput.files[0]))
 els.dropZone.addEventListener('drop', (e) => {
   const file = e.dataTransfer.files && e.dataTransfer.files[0];
   loadFile(file);
+});
+
+els.btnMerge.addEventListener('click', () => els.mergeFileInput.click());
+els.mergeFileInput.addEventListener('change', () => {
+  mergeFiles(els.mergeFileInput.files);
+  els.mergeFileInput.value = '';
 });
 
 toolButtons.forEach((btn) => btn.addEventListener('click', () => setActiveTool(btn.dataset.tool)));

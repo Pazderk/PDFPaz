@@ -497,6 +497,36 @@
     overflow-y: auto;
   }
   #summaryStatus { font-size: 11px; color: var(--text-dim); }
+
+  #mergeRow { padding: 0 14px 12px; }
+  #recentSection { display: none; padding: 0 0 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+  #recentList { padding: 0 14px; display: flex; flex-direction: column; gap: 6px; }
+  .recent-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+  }
+  .recent-info { flex: 1; min-width: 0; }
+  .recent-name {
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .recent-meta { font-size: 10.5px; color: var(--text-dim); }
+  .recent-row .btn { padding: 4px 8px; font-size: 11px; flex: 0 0 auto; }
+
+  .thumb-card[draggable="true"] { cursor: grab; }
+  .thumb-card.dragging { opacity: .35; }
+  .thumb-card.drag-over { border-color: var(--accent); border-style: dashed; }
+  .thumb-card.insertion { border-style: dashed; border-color: var(--text-dim); cursor: default; }
+  .thumb-card.insertion canvas { border: 1px solid var(--border); }
+
+  .designer-box.redact { background: rgba(0,0,0,0.8); border-color: #000; }
 </style>
 </head>
 <body>
@@ -508,6 +538,16 @@
   <div id="dropZone">
     <div><strong>Click to choose a PDF</strong> or drag &amp; drop it here</div>
     <input type="file" id="fileInput" accept="application/pdf,.pdf" />
+  </div>
+
+  <div id="mergeRow">
+    <button class="btn" id="btnMerge">Merge PDFs&hellip;</button>
+    <input type="file" id="mergeFileInput" accept="application/pdf,.pdf" multiple style="display:none;" />
+  </div>
+
+  <div id="recentSection">
+    <div class="block-label" style="padding: 0 14px;">Recent Files</div>
+    <div id="recentList"></div>
   </div>
 
   <div id="docInfo"></div>
@@ -530,6 +570,9 @@
       <button class="btn tool-btn" id="toolFillForm" data-tool="fill-form">Fill Form</button>
       <button class="btn tool-btn" id="toolAddField" data-tool="add-field">Add Field</button>
       <button class="btn tool-btn" id="toolWatermark" data-tool="watermark">Watermark</button>
+      <button class="btn tool-btn" id="toolRedact" data-tool="redact">Redact</button>
+      <button class="btn tool-btn" id="toolInsertPage" data-tool="insert-page">Insert Page</button>
+      <button class="btn tool-btn" id="toolPageNumbers" data-tool="page-numbers">Page Numbers</button>
       <button class="btn tool-btn" id="toolSplit" data-tool="split">Split into Pages</button>
       <button class="btn tool-btn" id="toolExport" data-tool="export">Export PDF</button>
     </div>
@@ -546,7 +589,7 @@
   <section class="panel-block" id="keepSection">
     <div class="block-label">Pages to keep</div>
     <input type="text" id="keepInput" placeholder="e.g. 1-3,5,8-10" />
-    <div id="keepHint">Type a range, or click thumbnails below &mdash; both stay in sync. Nothing is removed until you press Apply.</div>
+    <div id="keepHint">Type a range (by original page number), or click thumbnails below &mdash; both stay in sync. Nothing is removed until you press Apply. Drag a thumbnail to reorder pages &mdash; that happens immediately.</div>
   </section>
 
   <section class="panel-block" id="formFieldsSection">
@@ -580,8 +623,53 @@
     <div class="hint-text">Leave the text empty and press Apply to remove the current watermark.</div>
   </section>
 
+  <section class="panel-block" id="redactSection">
+    <div class="block-label">Redact</div>
+    <div class="hint-text">Click a page thumbnail below, then drag to black out a region. Redacted pages are flattened to an image on export &mdash; the covered content is actually removed, not just hidden, but any form fields or annotations on that page are removed too.</div>
+  </section>
+
+  <section class="panel-block" id="insertPageSection">
+    <div class="block-label">Insert Page</div>
+    <div class="row wm-row">
+      <label><input type="radio" name="insertType" value="blank" id="insertTypeBlank" checked /> Blank page</label>
+      <label><input type="radio" name="insertType" value="image" id="insertTypeImage" /> Image</label>
+    </div>
+    <div class="row wm-row" id="insertImageRow" style="display:none;">
+      <input type="file" id="insertImageFile" accept="image/png,image/jpeg" />
+    </div>
+    <div class="row wm-row">
+      <label>Position <select id="insertPosition"></select></label>
+    </div>
+    <button class="btn primary" id="btnInsertPage" style="margin-top:8px;">Insert</button>
+    <div class="hint-text">Inserted pages appear as dashed cards in the grid below and aren't draggable &mdash; remove and re-insert at a different position if needed.</div>
+  </section>
+
+  <section class="panel-block" id="pageNumberSection">
+    <div class="block-label">Page Numbers</div>
+    <input type="text" id="pageNumberTemplate" placeholder="Page {page} of {pages}" value="Page {page} of {pages}" />
+    <div class="row wm-row">
+      <label>Position
+        <select id="pageNumberPosition">
+          <option value="bottom-center">Bottom Center</option>
+          <option value="bottom-right">Bottom Right</option>
+          <option value="bottom-left">Bottom Left</option>
+          <option value="top-center">Top Center</option>
+          <option value="top-right">Top Right</option>
+          <option value="top-left">Top Left</option>
+        </select>
+      </label>
+      <label>Size <input type="number" id="pageNumberSize" value="11" min="6" max="36" /></label>
+      <label>Color <input type="color" id="pageNumberColor" value="#000000" /></label>
+    </div>
+    <div class="row wm-row">
+      <label><input type="radio" name="pageNumberScope" value="all" id="pageNumberScopeAll" checked /> All pages</label>
+      <label><input type="radio" name="pageNumberScope" value="selected" id="pageNumberScopeSelected" /> Selected pages</label>
+    </div>
+    <div class="hint-text">Use {page} and {pages} in the template. Leave the template empty and press Apply to remove page numbers.</div>
+  </section>
+
   <div id="flattenRow">
-    <label><input type="checkbox" id="flattenCheckbox" /> Flatten form fields on export (bakes values in permanently; recommended before Split)</label>
+    <label><input type="checkbox" id="flattenCheckbox" /> Flatten form fields on export (bakes values in permanently; recommended before Split, Merge, or if you've reordered/inserted pages)</label>
   </div>
 
   <div id="applyHint"></div>
@@ -604,7 +692,7 @@
         <span id="designerPageLabel">Page 1</span>
         <button class="btn" id="designerClose">Close</button>
       </div>
-      <div class="designer-hint">Drag on the page to draw a new field. Amber boxes are existing fields; blue boxes are new ones you've staged.</div>
+      <div class="designer-hint" id="designerHint">Drag on the page to draw a new field. Amber boxes are existing fields; blue boxes are new ones you've staged.</div>
       <div id="designerCanvasWrap" class="designer-canvas-wrap">
         <canvas id="designerCanvas"></canvas>
         <div id="designerBoxes"></div>
