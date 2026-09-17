@@ -129,7 +129,7 @@
     flex-wrap: wrap;
   }
 
-  #keepInput {
+  #keepInput, .text-input {
     width: 100%;
     background: var(--panel-2);
     color: var(--text);
@@ -139,7 +139,7 @@
     font-size: 12.5px;
     font-family: inherit;
   }
-  #keepInput:focus { border-color: var(--accent); outline: none; }
+  #keepInput:focus, .text-input:focus { border-color: var(--accent); outline: none; }
   #keepHint {
     margin-top: 4px;
     font-size: 10.5px;
@@ -553,7 +553,17 @@
   <div id="docInfo"></div>
 
   <div id="summarizeRow">
-    <button class="btn" id="btnSummarize">Summarize with Chrome AI</button>
+    <input type="text" id="summaryFocus" class="text-input" placeholder="Optional: focus on&hellip; (e.g. payment terms, action items)" />
+    <div class="row wm-row" style="margin-top:6px;">
+      <label>Length
+        <select id="summaryLength">
+          <option value="short">Short</option>
+          <option value="medium" selected>Medium</option>
+          <option value="long">Long</option>
+        </select>
+      </label>
+      <button class="btn" id="btnSummarize">Summarize with Chrome AI</button>
+    </div>
   </div>
   <div id="summarySection">
     <div class="block-label">Summary</div>
@@ -604,7 +614,7 @@
 
   <section class="panel-block" id="watermarkSection">
     <div class="block-label">Watermark</div>
-    <input type="text" id="watermarkText" placeholder="e.g. CONFIDENTIAL, DRAFT" />
+    <input type="text" id="watermarkText" class="text-input" placeholder="e.g. CONFIDENTIAL, DRAFT" />
     <div class="row wm-row">
       <label>Size <input type="number" id="watermarkSize" value="40" min="8" max="120" /></label>
       <label>Rotation <input type="number" id="watermarkRotation" value="-45" min="-90" max="90" />&deg;</label>
@@ -646,7 +656,7 @@
 
   <section class="panel-block" id="pageNumberSection">
     <div class="block-label">Page Numbers</div>
-    <input type="text" id="pageNumberTemplate" placeholder="Page {page} of {pages}" value="Page {page} of {pages}" />
+    <input type="text" id="pageNumberTemplate" class="text-input" placeholder="Page {page} of {pages}" value="Page {page} of {pages}" />
     <div class="row wm-row">
       <label>Position
         <select id="pageNumberPosition">

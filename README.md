@@ -14,7 +14,7 @@ Brog's PDF Editor — a 100% client-side Chrome side-panel extension for editing
 - **Flatten** — bake filled values into the page content and remove interactivity on export
 - **Watermark** — stamp text (e.g. "CONFIDENTIAL", "DRAFT") on all or selected pages, with configurable size, rotation, color, opacity, and optional tiling
 - **Page Numbers** — stamp a template like "Page {page} of {pages}" in any corner/center, position-aware across reordering and insertions
-- **Summarize with Chrome AI** — uses Chrome's built-in on-device Summarizer API (Chrome 138+) to summarize the extracted text, entirely locally
+- **Summarize with Chrome AI** — uses Chrome's built-in on-device Summarizer API (Chrome 138+) to summarize the extracted text, entirely locally. Optional focus note (e.g. "payment terms and deadlines") and a short/medium/long length control; output streams in progressively instead of appearing all at once
 - **Recent Files** — the last 8 documents you had open are saved automatically and can be reopened from the panel
 - Session persistence via IndexedDB, so edits survive closing the side panel
 

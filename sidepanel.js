@@ -45,6 +45,8 @@ const els = {
   designerCancel: document.getElementById('designerCancel'),
   designerClose: document.getElementById('designerClose'),
   summarizeRow: document.getElementById('summarizeRow'),
+  summaryFocus: document.getElementById('summaryFocus'),
+  summaryLength: document.getElementById('summaryLength'),
   btnSummarize: document.getElementById('btnSummarize'),
   summarySection: document.getElementById('summarySection'),
   summaryStatus: document.getElementById('summaryStatus'),
@@ -2104,6 +2106,10 @@ async function summarizeDocument() {
       return;
     }
 
+    const focus = els.summaryFocus.value.trim();
+    let sharedContext = `Text extracted from a PDF named ${state.baseName}.pdf.`;
+    if (focus) sharedContext += ` Focus the summary on: ${focus}.`;
+
     els.summaryStatus.textContent = 'Preparing on-device model…';
     const abortController = new AbortController();
     const timeoutId = setTimeout(() => abortController.abort(), 60000);
@@ -2112,7 +2118,8 @@ async function summarizeDocument() {
       summarizer = await Summarizer.create({
         type: 'key-points',
         format: 'plain-text',
-        length: 'medium',
+        length: els.summaryLength.value,
+        sharedContext,
         signal: abortController.signal,
         monitor(m) {
           m.addEventListener('downloadprogress', (e) => {
@@ -2124,17 +2131,49 @@ async function summarizeDocument() {
       clearTimeout(timeoutId);
     }
 
+    // Prefer the model's own token-based input quota over a blind character
+    // cap, so long documents only get truncated as much as actually needed.
+    let inputText = text;
+    let wasTruncated = false;
+    try {
+      if (typeof summarizer.measureInputUsage === 'function' && typeof summarizer.inputQuota === 'number') {
+        const usage = await summarizer.measureInputUsage(inputText);
+        if (usage > summarizer.inputQuota) {
+          const ratio = (summarizer.inputQuota / usage) * 0.9; // safety margin
+          inputText = inputText.slice(0, Math.max(500, Math.floor(inputText.length * ratio)));
+          wasTruncated = true;
+        }
+      } else if (inputText.length > 20000) {
+        inputText = inputText.slice(0, 20000);
+        wasTruncated = true;
+      }
+    } catch (err) {
+      if (text.length > 20000) {
+        inputText = text.slice(0, 20000);
+        wasTruncated = true;
+      }
+    }
+
     els.summaryStatus.textContent = 'Summarizing…';
-    const truncated = text.length > 20000 ? text.slice(0, 20000) : text;
-    const summary = await summarizer.summarize(truncated, {
-      context: `Text extracted from a PDF named ${state.baseName}.pdf.`,
-      signal: abortController.signal,
-    });
+    let summary;
+    if (typeof summarizer.summarizeStreaming === 'function') {
+      // Streamed so the panel fills in progressively instead of sitting on
+      // "Summarizing…" for the whole generation — chunks are incremental
+      // pieces of text to append, not cumulative snapshots.
+      const stream = summarizer.summarizeStreaming(inputText, { signal: abortController.signal });
+      let acc = '';
+      for await (const chunk of stream) {
+        acc += chunk;
+        els.summaryOutput.textContent = acc;
+      }
+      summary = acc;
+    } else {
+      summary = await summarizer.summarize(inputText, { signal: abortController.signal });
+    }
     summarizer.destroy();
 
     els.summaryOutput.textContent = summary;
-    els.summaryStatus.textContent =
-      truncated.length < text.length ? 'Summary (document truncated for length):' : 'Summary:';
+    els.summaryStatus.textContent = wasTruncated ? 'Summary (document truncated for length):' : 'Summary:';
   } catch (err) {
     console.error(err);
     if (err.name === 'AbortError') {
