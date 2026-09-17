@@ -340,6 +340,50 @@
     display: none;
   }
 
+  .wm-badge {
+    position: absolute;
+    bottom: 4px;
+    left: 4px;
+    background: var(--amber);
+    color: #1e1f22;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 4px;
+    border-radius: 8px;
+    display: none;
+  }
+
+  .wm-row {
+    margin-top: 8px;
+  }
+  .wm-row label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+  }
+  .wm-row input[type=number] {
+    width: 50px;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 6px;
+    font-size: 11.5px;
+    font-family: inherit;
+  }
+  .wm-row input[type=color] {
+    width: 28px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel-2);
+    cursor: pointer;
+  }
+  .wm-opacity input[type=range] { width: 100px; }
+
   .designer-overlay {
     position: fixed;
     inset: 0;
@@ -485,6 +529,7 @@
       <button class="btn tool-btn" id="toolRotateAll" data-tool="rotate-all">Rotate All</button>
       <button class="btn tool-btn" id="toolFillForm" data-tool="fill-form">Fill Form</button>
       <button class="btn tool-btn" id="toolAddField" data-tool="add-field">Add Field</button>
+      <button class="btn tool-btn" id="toolWatermark" data-tool="watermark">Watermark</button>
       <button class="btn tool-btn" id="toolSplit" data-tool="split">Split into Pages</button>
       <button class="btn tool-btn" id="toolExport" data-tool="export">Export PDF</button>
     </div>
@@ -512,6 +557,27 @@
   <section class="panel-block" id="addFieldSection">
     <div class="block-label">Add Field</div>
     <div class="hint-text">Click a page thumbnail below to open the field designer, then drag on the page to draw a new field.</div>
+  </section>
+
+  <section class="panel-block" id="watermarkSection">
+    <div class="block-label">Watermark</div>
+    <input type="text" id="watermarkText" placeholder="e.g. CONFIDENTIAL, DRAFT" />
+    <div class="row wm-row">
+      <label>Size <input type="number" id="watermarkSize" value="40" min="8" max="120" /></label>
+      <label>Rotation <input type="number" id="watermarkRotation" value="-45" min="-90" max="90" />&deg;</label>
+      <label>Color <input type="color" id="watermarkColor" value="#808080" /></label>
+    </div>
+    <div class="row wm-row">
+      <label class="wm-opacity">Opacity <input type="range" id="watermarkOpacity" min="5" max="100" value="30" /> <span id="watermarkOpacityLabel">30%</span></label>
+    </div>
+    <div class="row wm-row">
+      <label><input type="checkbox" id="watermarkTile" /> Tile across page</label>
+    </div>
+    <div class="row wm-row">
+      <label><input type="radio" name="watermarkScope" value="all" id="watermarkScopeAll" checked /> All pages</label>
+      <label><input type="radio" name="watermarkScope" value="selected" id="watermarkScopeSelected" /> Selected pages</label>
+    </div>
+    <div class="hint-text">Leave the text empty and press Apply to remove the current watermark.</div>
   </section>
 
   <div id="flattenRow">

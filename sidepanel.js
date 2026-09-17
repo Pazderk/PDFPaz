@@ -43,6 +43,16 @@ const els = {
   summarySection: document.getElementById('summarySection'),
   summaryStatus: document.getElementById('summaryStatus'),
   summaryOutput: document.getElementById('summaryOutput'),
+  watermarkSection: document.getElementById('watermarkSection'),
+  watermarkText: document.getElementById('watermarkText'),
+  watermarkSize: document.getElementById('watermarkSize'),
+  watermarkRotation: document.getElementById('watermarkRotation'),
+  watermarkColor: document.getElementById('watermarkColor'),
+  watermarkOpacity: document.getElementById('watermarkOpacity'),
+  watermarkOpacityLabel: document.getElementById('watermarkOpacityLabel'),
+  watermarkTile: document.getElementById('watermarkTile'),
+  watermarkScopeAll: document.getElementById('watermarkScopeAll'),
+  watermarkScopeSelected: document.getElementById('watermarkScopeSelected'),
 };
 const toolButtons = Array.from(document.querySelectorAll('.tool-btn'));
 
@@ -61,6 +71,7 @@ const state = {
   formValues: new Map(),    // field name -> value (string | boolean), covers existing + newly added fields
   newFields: [],            // user-created fields: {id, pageIndex, type, name, rect:{x,y,width,height} in PDF pts, options}
   flattenForm: false,       // whether to flatten the form (bake values, remove interactivity) on export/split
+  watermark: null,          // null | {text, fontSize, rotation, color, opacity, tile, pageIndices:[...]}
 };
 
 function setStatus(message, isError = false) {
@@ -124,6 +135,7 @@ async function persistSession() {
       formValues: [...state.formValues.entries()],
       newFields: state.newFields,
       flattenForm: state.flattenForm,
+      watermark: state.watermark,
     });
   } catch (err) {
     console.error('Failed to persist session', err);
@@ -237,6 +249,7 @@ async function restoreSession() {
     state.stagedDeleted = new Set(state.deletedPages);
     state.newFields = record.newFields || [];
     state.flattenForm = !!record.flattenForm;
+    state.watermark = record.watermark || null;
 
     const loadingTask = pdfjsLib.getDocument({ data: state.originalBytes.slice() });
     state.pdfjsDoc = await loadingTask.promise;
@@ -382,6 +395,7 @@ async function loadFile(file) {
     state.formValues = new Map();
     state.newFields = [];
     state.flattenForm = false;
+    state.watermark = null;
 
     if (state.pdfjsDoc) {
       state.pdfjsDoc.destroy();
@@ -414,8 +428,23 @@ function showEditorUI() {
   els.actionRow.style.display = 'flex';
   els.summarizeRow.style.display = 'block';
   els.flattenCheckbox.checked = state.flattenForm;
+  applyWatermarkStateToControls();
   updateDocInfo();
   updateFlattenRowVisibility();
+}
+
+function applyWatermarkStateToControls() {
+  const wm = state.watermark;
+  els.watermarkText.value = wm ? wm.text : '';
+  els.watermarkSize.value = wm ? wm.fontSize : 40;
+  els.watermarkRotation.value = wm ? wm.rotation : -45;
+  els.watermarkColor.value = wm ? wm.color : '#808080';
+  const opacityPct = wm ? Math.round(wm.opacity * 100) : 30;
+  els.watermarkOpacity.value = opacityPct;
+  els.watermarkOpacityLabel.textContent = `${opacityPct}%`;
+  els.watermarkTile.checked = wm ? !!wm.tile : false;
+  els.watermarkScopeAll.checked = true;
+  els.watermarkScopeSelected.checked = false;
 }
 
 function updateDocInfo() {
@@ -481,6 +510,10 @@ async function renderThumbnails() {
     const fieldBadge = document.createElement('div');
     fieldBadge.className = 'field-badge';
 
+    const wmBadge = document.createElement('div');
+    wmBadge.className = 'wm-badge';
+    wmBadge.textContent = 'WM';
+
     const label = document.createElement('div');
     label.className = 'page-label';
     label.textContent = `Page ${pageNum}`;
@@ -489,6 +522,7 @@ async function renderThumbnails() {
     card.appendChild(tag);
     card.appendChild(badge);
     card.appendChild(fieldBadge);
+    card.appendChild(wmBadge);
     card.appendChild(canvas);
     card.appendChild(label);
 
@@ -567,6 +601,10 @@ function refreshAllCardVisuals() {
     } else {
       fieldBadge.style.display = 'none';
     }
+
+    const wmBadge = card.querySelector('.wm-badge');
+    const watermarked = state.watermark && state.watermark.pageIndices.includes(idx);
+    wmBadge.style.display = watermarked ? 'block' : 'none';
   });
 }
 
@@ -577,6 +615,7 @@ function setActiveTool(tool) {
   toolButtons.forEach((btn) => btn.classList.toggle('active', btn.dataset.tool === state.activeTool));
   els.formFieldsSection.style.display = state.activeTool === 'fill-form' ? 'block' : 'none';
   els.addFieldSection.style.display = state.activeTool === 'add-field' ? 'block' : 'none';
+  els.watermarkSection.style.display = state.activeTool === 'watermark' ? 'block' : 'none';
   if (state.activeTool === 'fill-form') renderFormFieldsPanel();
   refreshAllCardVisuals();
   updateApplyHint();
@@ -686,6 +725,18 @@ function updateApplyHint() {
       ? `${state.newFields.length} new field(s) staged. Click a page to add more, then press Apply.`
       : 'Click a page thumbnail below to open the field designer.';
     canApply = true;
+  } else if (tool === 'watermark') {
+    const text = els.watermarkText.value.trim();
+    if (!text) {
+      hint = state.watermark
+        ? 'Text is empty — press Apply to remove the current watermark.'
+        : 'Enter watermark text above, then press Apply.';
+      canApply = !!state.watermark;
+    } else {
+      const scope = els.watermarkScopeSelected.checked ? `${state.selectedPages.size} selected page(s)` : 'all pages';
+      hint = `Ready to stamp "${text}" on ${scope}.`;
+      canApply = !els.watermarkScopeSelected.checked || state.selectedPages.size > 0;
+    }
   } else if (tool === 'split') {
     const active = state.numPages - state.deletedPages.size;
     hint = `Ready to split ${active} active page(s) into separate PDFs.`;
@@ -730,6 +781,29 @@ async function applyCurrentTool() {
     } else if (tool === 'add-field') {
       await persistSession();
       setStatus(`Saved ${state.newFields.length} field definition(s).`);
+    } else if (tool === 'watermark') {
+      const text = els.watermarkText.value.trim();
+      if (!text) {
+        state.watermark = null;
+        await persistSession();
+        setStatus('Watermark removed.');
+      } else {
+        const pageIndices = els.watermarkScopeSelected.checked
+          ? [...state.selectedPages]
+          : Array.from({ length: state.numPages }, (_, i) => i);
+        state.watermark = {
+          text,
+          fontSize: Math.max(8, Math.min(120, Number(els.watermarkSize.value) || 40)),
+          rotation: Math.max(-90, Math.min(90, Number(els.watermarkRotation.value) || 0)),
+          color: els.watermarkColor.value,
+          opacity: Math.max(0.05, Math.min(1, Number(els.watermarkOpacity.value) / 100)),
+          tile: els.watermarkTile.checked,
+          pageIndices,
+        };
+        await persistSession();
+        setStatus(`Watermark "${text}" staged on ${pageIndices.length} page(s).`);
+      }
+      refreshAllCardVisuals();
     } else if (tool === 'split') {
       await splitDocument();
     } else if (tool === 'export') {
@@ -819,7 +893,54 @@ async function buildEditedDocument() {
     }
   }
 
+  if (state.watermark && state.watermark.text && state.watermark.pageIndices.length) {
+    try {
+      const font = await pdfDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
+      const color = hexToRgb01(state.watermark.color);
+      for (const idx of state.watermark.pageIndices) {
+        const page = pages[idx];
+        if (page) drawWatermarkOnPage(page, font, state.watermark, color);
+      }
+    } catch (err) {
+      console.error('Failed to draw watermark', err);
+    }
+  }
+
   return pdfDoc;
+}
+
+function hexToRgb01(hex) {
+  const clean = (hex || '#808080').replace('#', '');
+  const r = parseInt(clean.slice(0, 2), 16) / 255;
+  const g = parseInt(clean.slice(2, 4), 16) / 255;
+  const b = parseInt(clean.slice(4, 6), 16) / 255;
+  return PDFLib.rgb(r || 0, g || 0, b || 0);
+}
+
+function drawWatermarkOnPage(page, font, wm, color) {
+  const { width, height } = page.getSize();
+  const drawOpts = {
+    font,
+    size: wm.fontSize,
+    color,
+    opacity: wm.opacity,
+    rotate: PDFLib.degrees(wm.rotation),
+  };
+  if (!wm.tile) {
+    const textWidth = font.widthOfTextAtSize(wm.text, wm.fontSize);
+    page.drawText(wm.text, { ...drawOpts, x: (width - textWidth) / 2, y: height / 2 });
+    return;
+  }
+  const textWidth = font.widthOfTextAtSize(wm.text, wm.fontSize);
+  const stepX = textWidth + 80;
+  const stepY = wm.fontSize + 80;
+  // Overshoot the page bounds on every side since rotating each stamp expands
+  // its effective footprint beyond the unrotated text box.
+  for (let y = -height; y < height * 2; y += stepY) {
+    for (let x = -width; x < width * 2; x += stepX) {
+      page.drawText(wm.text, { ...drawOpts, x, y });
+    }
+  }
 }
 
 async function exportEditedPdf() {
@@ -874,6 +995,7 @@ async function resetEverything() {
   state.formValues = new Map();
   state.newFields = [];
   state.flattenForm = false;
+  state.watermark = null;
 
   await clearSession();
 
@@ -885,6 +1007,7 @@ async function resetEverything() {
   els.actionRow.style.display = 'none';
   els.formFieldsSection.style.display = 'none';
   els.addFieldSection.style.display = 'none';
+  els.watermarkSection.style.display = 'none';
   els.flattenRow.style.display = 'none';
   els.fieldDesignerOverlay.style.display = 'none';
   els.summarizeRow.style.display = 'none';
@@ -1090,6 +1213,14 @@ els.designerCancel.addEventListener('click', () => {
 els.designerClose.addEventListener('click', () => {
   els.fieldDesignerOverlay.style.display = 'none';
   designerState = null;
+});
+
+els.watermarkOpacity.addEventListener('input', () => {
+  els.watermarkOpacityLabel.textContent = `${els.watermarkOpacity.value}%`;
+});
+[els.watermarkText, els.watermarkScopeAll, els.watermarkScopeSelected].forEach((el) => {
+  el.addEventListener('input', updateApplyHint);
+  el.addEventListener('change', updateApplyHint);
 });
 
 els.flattenCheckbox.addEventListener('change', () => {
