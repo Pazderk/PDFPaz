@@ -494,8 +494,16 @@ async function restoreSession() {
 }
 
 // --- Download helper -------------------------------------------------------
-// Data URLs (not blob: URLs) are used because the side panel document can be
-// closed mid-download, which would revoke any blob: URL it created.
+// Small files go through a data: URL, which has no dependency on this
+// document staying alive — safe even if the side panel is closed mid-download.
+// Above DATA_URL_SIZE_LIMIT that base64-encoded string gets big enough to risk
+// hitting the renderer's own memory/string limits before the download even
+// starts, so large files instead use a blob: URL, which stays valid only as
+// long as this document is open. That's a real tradeoff (closing the panel
+// mid-download can interrupt it), so callers should warn the user to keep the
+// panel open until the download begins; see exportEditedPdf/splitDocument.
+const DATA_URL_SIZE_LIMIT = 100 * 1024 * 1024; // 100MB
+
 function bytesToDataURL(bytes, mimeType) {
   return new Promise((resolve, reject) => {
     const blob = new Blob([bytes], { type: mimeType });
@@ -507,11 +515,45 @@ function bytesToDataURL(bytes, mimeType) {
 }
 
 async function downloadBytes(bytes, filename, mimeType) {
+  if (bytes.length >= DATA_URL_SIZE_LIMIT) {
+    return downloadViaBlobUrl(bytes, filename, mimeType);
+  }
   const url = await bytesToDataURL(bytes, mimeType);
   return new Promise((resolve, reject) => {
     chrome.downloads.download({ url, filename, saveAs: false }, (downloadId) => {
       if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
       else resolve(downloadId);
+    });
+  });
+}
+
+function downloadViaBlobUrl(bytes, filename, mimeType) {
+  const blob = new Blob([bytes], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  return new Promise((resolve, reject) => {
+    chrome.downloads.download({ url, filename, saveAs: false }, (downloadId) => {
+      if (chrome.runtime.lastError) {
+        URL.revokeObjectURL(url);
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      // Revoke once the download reaches a terminal state rather than
+      // immediately — Chrome needs the blob: URL to stay valid while it
+      // reads the file off it, which for a large file isn't instantaneous.
+      const listener = (delta) => {
+        if (delta.id !== downloadId) return;
+        if (delta.state && (delta.state.current === 'complete' || delta.state.current === 'interrupted')) {
+          chrome.downloads.onChanged.removeListener(listener);
+          URL.revokeObjectURL(url);
+        }
+      };
+      chrome.downloads.onChanged.addListener(listener);
+      // Safety net in case onChanged never reports a terminal state.
+      setTimeout(() => {
+        chrome.downloads.onChanged.removeListener(listener);
+        URL.revokeObjectURL(url);
+      }, 5 * 60 * 1000);
+      resolve(downloadId);
     });
   });
 }
@@ -1612,6 +1654,9 @@ async function exportEditedPdf() {
   const sourceDoc = await buildEditedDocument();
   const finalDoc = await finalizeDocument(sourceDoc);
   const bytes = await finalDoc.save();
+  if (bytes.length >= DATA_URL_SIZE_LIMIT) {
+    setStatus('Large file — keep this panel open until the download starts…');
+  }
   await downloadBytes(bytes, `${state.baseName}-edited.pdf`, 'application/pdf');
   setStatus(`Exported ${finalDoc.getPageCount()} page(s) to ${state.baseName}-edited.pdf`);
 }
@@ -1630,6 +1675,9 @@ async function splitDocument() {
     const [copied] = await newDoc.copyPages(finalDoc, [i]);
     newDoc.addPage(copied);
     const bytes = await newDoc.save();
+    if (bytes.length >= DATA_URL_SIZE_LIMIT) {
+      setStatus(`Splitting… (${done + 1}/${count}) — large page, keep this panel open until the download starts…`);
+    }
     await downloadBytes(bytes, `${state.baseName}-page-${i + 1}.pdf`, 'application/pdf');
     done++;
   }

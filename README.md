@@ -22,4 +22,5 @@ Brog's PDF Editor — a 100% client-side Chrome side-panel extension for editing
 
 - Reordering, inserting, or splitting a document with an *unflattened* form can break the live form fields in the output (a pdf-lib limitation when rebuilding page order) — flatten first if you need both.
 - Redacting a page replaces its entire content with a flattened image, so any form fields or annotations on that page are removed along with it.
+- Downloads under 100MB use a `data:` URL, which survives the side panel being closed mid-download. Above that, downloads use a `blob:` URL instead (to avoid the base64 string getting large enough to risk memory/size limits before the download even starts) — keep the panel open until the download starts for those.
 
