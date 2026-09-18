@@ -500,6 +500,9 @@
 
   #mergeRow { padding: 0 14px 12px; }
   #recentSection { display: none; padding: 0 0 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+  #templatesSection { display: none; padding: 0 0 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+  #saveTemplateRow { display: none; align-items: center; gap: 6px; flex-wrap: wrap; padding: 0 14px 10px; }
+  #saveTemplateForm { flex: 1; min-width: 220px; }
   #recentList { padding: 0 14px; display: flex; flex-direction: column; gap: 6px; }
   .recent-row {
     display: flex;
@@ -562,12 +565,27 @@
     <button class="btn" id="btnEditProfile">Autofill Profile&hellip;</button>
   </div>
 
+  <div id="templatesSection">
+    <div class="block-label" style="padding: 0 14px;">Templates</div>
+    <div id="templatesList"></div>
+  </div>
+
   <div id="recentSection">
     <div class="block-label" style="padding: 0 14px;">Recent Files</div>
     <div id="recentList"></div>
   </div>
 
   <div id="docInfo"></div>
+
+  <div id="saveTemplateRow">
+    <button class="btn" id="btnSaveTemplate">Save as Template&hellip;</button>
+    <button class="btn" id="btnUpdateTemplate" style="display:none;">Update Template</button>
+    <div id="saveTemplateForm" class="row" style="display:none;">
+      <input type="text" id="saveTemplateName" class="text-input" placeholder="Template name" style="flex:1;" />
+      <button class="btn primary" id="saveTemplateConfirm">Save</button>
+      <button class="btn" id="saveTemplateCancel">Cancel</button>
+    </div>
+  </div>
 
   <div id="summarizeRow">
     <input type="text" id="summaryFocus" class="text-input" placeholder="Optional: focus on&hellip; (e.g. payment terms, action items)" />
@@ -622,8 +640,11 @@
   <section class="panel-block" id="formFieldsSection">
     <div class="block-label">Fill Form</div>
     <div id="autofillRow">
-      <button class="btn" id="btnAutofillAI">Autofill with AI &#10024;</button>
-      <div class="hint-text">Uses Chrome's on-device AI and your saved Autofill Profile to guess values &mdash; always review before pressing Apply.</div>
+      <label class="hint-text" for="autofillSource" style="padding:0 0 3px;display:block;">Fill from (optional, combined with your Profile)</label>
+      <select id="autofillSource" class="text-input"></select>
+      <input type="file" id="autofillSourceFile" accept="application/pdf,.pdf" style="display:none;" />
+      <button class="btn" id="btnAutofillAI" style="margin-top:6px;">Autofill with AI &#10024;</button>
+      <div class="hint-text">Uses Chrome's on-device AI, your saved Autofill Profile, and any chosen source document to guess values &mdash; always review before pressing Apply.</div>
     </div>
     <div id="formFieldsList"></div>
   </section>

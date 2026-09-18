@@ -19,8 +19,19 @@ const els = {
   profileClear: document.getElementById('profileClear'),
   profileClose: document.getElementById('profileClose'),
   btnAutofillAI: document.getElementById('btnAutofillAI'),
+  autofillSource: document.getElementById('autofillSource'),
+  autofillSourceFile: document.getElementById('autofillSourceFile'),
   recentSection: document.getElementById('recentSection'),
   recentList: document.getElementById('recentList'),
+  templatesSection: document.getElementById('templatesSection'),
+  templatesList: document.getElementById('templatesList'),
+  saveTemplateRow: document.getElementById('saveTemplateRow'),
+  btnSaveTemplate: document.getElementById('btnSaveTemplate'),
+  btnUpdateTemplate: document.getElementById('btnUpdateTemplate'),
+  saveTemplateForm: document.getElementById('saveTemplateForm'),
+  saveTemplateName: document.getElementById('saveTemplateName'),
+  saveTemplateConfirm: document.getElementById('saveTemplateConfirm'),
+  saveTemplateCancel: document.getElementById('saveTemplateCancel'),
   docInfo: document.getElementById('docInfo'),
   toolSection: document.getElementById('toolSection'),
   keepSection: document.getElementById('keepSection'),
@@ -108,6 +119,7 @@ const state = {
   redactions: [],           // {id, pageIndex, rect:{x,y,width,height} in PDF pts}
   insertions: [],           // {id, anchor: 'start'|'end'|{after:idx}, type:'blank'|'image', width, height, imageBytes, imageFormat}
   pageNumbering: null,      // null | {template, position, fontSize, color, pageIndices:[...]}
+  originTemplateId: null,   // id of the Template this document was opened from, if any (enables "Update Template")
 };
 
 function setStatus(message, isError = false) {
@@ -127,17 +139,22 @@ function setBusy(busy) {
 // 'profile' holds a single record (key 'default') with the user's saved
 // Autofill Profile — never transmitted anywhere, only read locally to build
 // the on-device AI prompt for the Autofill tool.
+// 'templates' holds named, user-managed documents for PDFs that get filled
+// out repeatedly (e.g. a recurring intake form) — unlike 'recent', entries
+// here are never auto-evicted and can carry a "default fill" (any staged
+// edits, most usefully pre-filled form values) as their starting state.
 
 const MAX_RECENT = 8;
 
 function openDatabase() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('pdfpaz-db', 3);
+    const req = indexedDB.open('pdfpaz-db', 4);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains('session')) db.createObjectStore('session');
       if (!db.objectStoreNames.contains('recent')) db.createObjectStore('recent', { keyPath: 'id' });
       if (!db.objectStoreNames.contains('profile')) db.createObjectStore('profile');
+      if (!db.objectStoreNames.contains('templates')) db.createObjectStore('templates', { keyPath: 'id' });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -224,6 +241,36 @@ async function recentDelete(id) {
   });
 }
 
+async function templatePut(entry) {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('templates', 'readwrite');
+    tx.objectStore('templates').put(entry);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function templateGetAll() {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('templates', 'readonly');
+    const req = tx.objectStore('templates').getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function templateDelete(id) {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('templates', 'readwrite');
+    tx.objectStore('templates').delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 function buildSessionSnapshot() {
   return {
     baseName: state.baseName,
@@ -238,6 +285,7 @@ function buildSessionSnapshot() {
     insertions: state.insertions,
     redactions: state.redactions,
     pageNumbering: state.pageNumbering,
+    originTemplateId: state.originTemplateId,
   };
 }
 
@@ -369,6 +417,186 @@ async function openRecentSession(id) {
     await refreshRecentList();
   }
 }
+
+// --- Templates -----------------------------------------------------------
+// Named, user-managed documents for PDFs filled out repeatedly. Unlike
+// Recent Files, entries here are never auto-evicted, and "Use" always leaves
+// the template itself untouched — it loads a fresh working copy every time.
+
+async function refreshTemplatesList() {
+  let entries = [];
+  try {
+    entries = await templateGetAll();
+  } catch (err) {
+    console.error('Failed to list templates', err);
+  }
+  entries.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  els.templatesSection.style.display = entries.length ? 'block' : 'none';
+  els.templatesList.innerHTML = '';
+  entries.forEach((entry) => {
+    const row = document.createElement('div');
+    row.className = 'recent-row';
+
+    const info = document.createElement('div');
+    info.className = 'recent-info';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'recent-name';
+    nameEl.textContent = `${entry.name}.pdf`;
+    const metaEl = document.createElement('div');
+    metaEl.className = 'recent-meta';
+    metaEl.textContent = `${entry.numPages} page(s) · saved ${formatRelativeTime(entry.savedAt)}`;
+    info.appendChild(nameEl);
+    info.appendChild(metaEl);
+
+    const useBtn = document.createElement('button');
+    useBtn.className = 'btn';
+    useBtn.textContent = 'Use';
+    useBtn.addEventListener('click', () => openTemplate(entry.id));
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn danger';
+    delBtn.textContent = '×';
+    delBtn.title = 'Delete this template';
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteTemplate(entry.id);
+    });
+
+    row.appendChild(info);
+    row.appendChild(useBtn);
+    row.appendChild(delBtn);
+    els.templatesList.appendChild(row);
+  });
+  updateSaveTemplateUI();
+}
+
+// Whether the currently open document was opened via "Use" on a template
+// still governs whether "Update Template" is offered.
+async function updateSaveTemplateUI() {
+  let stillExists = false;
+  if (state.originTemplateId) {
+    try {
+      const all = await templateGetAll();
+      stillExists = all.some((t) => t.id === state.originTemplateId);
+    } catch (err) {
+      stillExists = false;
+    }
+  }
+  els.btnUpdateTemplate.style.display = stillExists ? 'inline-block' : 'none';
+}
+
+async function saveCurrentAsTemplate(name) {
+  if (!state.originalBytes) return;
+  const templateName = sanitizeBaseName(name) || state.baseName;
+  // The template's name becomes this document's name too, so exports from
+  // this session (and from every future "Use") are named after it rather
+  // than whatever file it was originally loaded from.
+  state.baseName = templateName;
+  const entry = {
+    id: `t${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
+    name: templateName,
+    savedAt: Date.now(),
+    numPages: state.numPages,
+    snapshot: buildSessionSnapshot(),
+  };
+  try {
+    await templatePut(entry);
+    state.originTemplateId = entry.id;
+    updateDocInfo();
+    await persistSession();
+    await refreshTemplatesList();
+    setStatus(`Saved as template "${entry.name}".`);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Failed to save template: ${err.message}`, true);
+  }
+}
+
+async function updateCurrentTemplate() {
+  if (!state.originTemplateId) return;
+  try {
+    const all = await templateGetAll();
+    const existing = all.find((t) => t.id === state.originTemplateId);
+    if (!existing) {
+      setStatus('That template no longer exists.', true);
+      await updateSaveTemplateUI();
+      return;
+    }
+    const entry = {
+      ...existing,
+      savedAt: Date.now(),
+      numPages: state.numPages,
+      snapshot: buildSessionSnapshot(),
+    };
+    await templatePut(entry);
+    await refreshTemplatesList();
+    setStatus(`Updated template "${entry.name}".`);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Failed to update template: ${err.message}`, true);
+  }
+}
+
+async function openTemplate(id) {
+  setBusy(true);
+  setStatus('Opening template…');
+  try {
+    const all = await templateGetAll();
+    const entry = all.find((e) => e.id === id);
+    if (!entry) {
+      setStatus('That template is no longer available.', true);
+      return;
+    }
+    await saveCurrentToRecentIfAny();
+    await applySnapshotToState(entry.snapshot);
+    state.baseName = entry.name; // the template's own name, not whatever the snapshot's source file was called
+    state.originTemplateId = entry.id; // always attribute to the template just used
+    await renderThumbnails();
+    showEditorUI();
+    updateKeepInputFromStaged();
+    await persistSession();
+    setStatus(`Opened "${entry.name}" from Templates — ${state.numPages} page(s).`);
+  } catch (err) {
+    console.error(err);
+    setStatus(`Failed to open template: ${err.message}`, true);
+  } finally {
+    setBusy(false);
+    await refreshRecentList();
+    await updateSaveTemplateUI();
+  }
+}
+
+async function deleteTemplate(id) {
+  try {
+    await templateDelete(id);
+    if (state.originTemplateId === id) state.originTemplateId = null;
+    await refreshTemplatesList();
+  } catch (err) {
+    console.error('Failed to delete template', err);
+  }
+}
+
+els.btnSaveTemplate.addEventListener('click', () => {
+  els.saveTemplateForm.style.display = 'flex';
+  els.btnSaveTemplate.style.display = 'none';
+  els.saveTemplateName.value = state.baseName;
+  els.saveTemplateName.focus();
+});
+els.saveTemplateCancel.addEventListener('click', () => {
+  els.saveTemplateForm.style.display = 'none';
+  els.btnSaveTemplate.style.display = 'inline-block';
+});
+els.saveTemplateConfirm.addEventListener('click', async () => {
+  const name = els.saveTemplateName.value.trim();
+  if (!name) {
+    setStatus('Enter a name for the template.', true);
+    return;
+  }
+  await saveCurrentAsTemplate(name);
+  els.saveTemplateForm.style.display = 'none';
+  els.btnSaveTemplate.style.display = 'inline-block';
+});
+els.btnUpdateTemplate.addEventListener('click', updateCurrentTemplate);
 
 // --- Autofill Profile --------------------------------------------------
 // A small, locally-stored profile used only to build the prompt for the
@@ -564,6 +792,7 @@ async function applySnapshotToState(record) {
   state.watermark = record.watermark || null;
   state.redactions = record.redactions || [];
   state.pageNumbering = record.pageNumbering || null;
+  state.originTemplateId = record.originTemplateId || null;
   state.insertions = (record.insertions || []).map((ins) => ({
     ...ins,
     imageBytes: ins.imageBytes
@@ -594,10 +823,12 @@ async function restoreSession() {
   } catch (err) {
     console.error('Failed to read saved session', err);
     await refreshRecentList();
+    await refreshTemplatesList();
     return false;
   }
   if (!record || !record.bytes) {
     await refreshRecentList();
+    await refreshTemplatesList();
     return false;
   }
 
@@ -609,11 +840,13 @@ async function restoreSession() {
     updateKeepInputFromStaged();
     setStatus(`Restored "${state.baseName}.pdf" — ${state.numPages} page(s).`);
     await refreshRecentList();
+    await refreshTemplatesList();
     return true;
   } catch (err) {
     console.error('Failed to restore session', err);
     setStatus('Could not restore the previous session.', true);
     await refreshRecentList();
+    await refreshTemplatesList();
     return false;
   }
 }
@@ -794,6 +1027,7 @@ async function loadBytes(bytes, baseName) {
   state.redactions = [];
   state.insertions = [];
   state.pageNumbering = null;
+  state.originTemplateId = null;
 
   if (state.pdfjsDoc) {
     state.pdfjsDoc.destroy();
@@ -820,11 +1054,15 @@ function showEditorUI() {
   els.keepSection.style.display = 'block';
   els.actionRow.style.display = 'flex';
   els.summarizeRow.style.display = 'block';
+  els.saveTemplateRow.style.display = 'flex';
+  els.saveTemplateForm.style.display = 'none';
+  els.btnSaveTemplate.style.display = 'inline-block';
   els.flattenCheckbox.checked = state.flattenForm;
   applyWatermarkStateToControls();
   applyPageNumberStateToControls();
   updateDocInfo();
   updateFlattenRowVisibility();
+  updateSaveTemplateUI();
 }
 
 function applyWatermarkStateToControls() {
@@ -1154,7 +1392,10 @@ function setActiveTool(tool) {
   els.redactSection.style.display = state.activeTool === 'redact' ? 'block' : 'none';
   els.insertPageSection.style.display = state.activeTool === 'insert-page' ? 'block' : 'none';
   els.pageNumberSection.style.display = state.activeTool === 'page-numbers' ? 'block' : 'none';
-  if (state.activeTool === 'fill-form') renderFormFieldsPanel();
+  if (state.activeTool === 'fill-form') {
+    renderFormFieldsPanel();
+    populateAutofillSourceOptions();
+  }
   if (state.activeTool === 'insert-page') populateInsertPositionOptions();
   refreshAllCardVisuals();
   updateApplyHint();
@@ -1329,7 +1570,47 @@ async function extractFieldLabelHints(fields) {
   return hints;
 }
 
-function buildAutofillPrompt(profile, fieldDescriptors) {
+// Reads a PDF picked as an autofill "source document" — its own filled
+// AcroForm values (if any) plus its general text content (capped, best
+// effort) — so the on-device model can pull facts specific to this one
+// document (a case number, an order date, an amount) on top of the saved
+// Profile. Entirely local, same as everything else here.
+async function gatherSourceDocumentContext(bytes) {
+  const context = { fieldPairs: [], text: '' };
+
+  try {
+    const detection = await detectFormFields(bytes);
+    context.fieldPairs = detection.fields
+      .filter((f) => f.type !== 'PDFButton' && f.type !== 'PDFSignature')
+      .map((f) => [f.name, f.currentValue])
+      .filter(([, v]) => v !== undefined && v !== '' && v !== false)
+      .map(([name, v]) => `${name}: ${v}`);
+  } catch (err) {
+    console.error('Failed to read source document fields', err);
+  }
+
+  let doc;
+  try {
+    doc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+    let text = '';
+    const maxPages = Math.min(doc.numPages, 20);
+    for (let i = 1; i <= maxPages; i++) {
+      const page = await doc.getPage(i);
+      const content = await page.getTextContent();
+      text += content.items.map((it) => it.str).join(' ') + '\n';
+      if (text.length > 8000) break;
+    }
+    context.text = text.slice(0, 8000);
+  } catch (err) {
+    console.error('Failed to extract source document text', err);
+  } finally {
+    if (doc) doc.destroy();
+  }
+
+  return context;
+}
+
+function buildAutofillPrompt(profile, fieldDescriptors, sourceContext) {
   const profileLines = PROFILE_FIELDS
     .map((f) => [f.label, profile[f.key]])
     .concat([['Notes', profile.notes]])
@@ -1343,23 +1624,38 @@ function buildAutofillPrompt(profile, fieldDescriptors) {
     2
   );
 
-  return [
-    "You are filling out a PDF form using the person's saved profile information below.",
+  const sections = [
+    "You are filling out a PDF form. Use the person's saved profile below, and, if a source document is provided, relevant facts from it too — the source document takes precedence over the profile for anything specific to this particular form, like a case number, an order date, or an amount.",
     '',
     'PROFILE:',
     profileLines || '(no profile information provided)',
+  ];
+
+  if (sourceContext && (sourceContext.fieldPairs.length || sourceContext.text.trim())) {
+    sections.push('', 'SOURCE DOCUMENT:');
+    if (sourceContext.fieldPairs.length) {
+      sections.push('Already-filled fields in that document:', sourceContext.fieldPairs.join('\n'));
+    }
+    if (sourceContext.text.trim()) {
+      sections.push('Extracted text (may be truncated):', sourceContext.text.trim());
+    }
+  }
+
+  sections.push(
     '',
     'FORM FIELDS (JSON array; each has an id, a best-guess label taken from text near the field, a type, and options if it is a choice field):',
     fieldsJson,
     '',
-    'For each field id, decide the best value from the profile. Rules:',
+    'For each field id, decide the best value. Rules:',
     '- If type is "checkbox", answer "true" or "false".',
     '- If type is "choice", answer with EXACTLY one of the listed options, verbatim, or "" if none fit.',
-    '- If type is "text" and no profile value clearly matches, answer "" — never invent a value.',
+    '- If type is "text" and nothing clearly matches, answer "" — never invent a value.',
     '- Combine first/last name if a field asks for a full name.',
     '',
-    'Respond with a single JSON object mapping each field id to its string value, e.g. {"f0":"Jane","f1":""}.',
-  ].join('\n');
+    'Respond with a single JSON object mapping each field id to its string value, e.g. {"f0":"Jane","f1":""}.'
+  );
+
+  return sections.join('\n');
 }
 
 function buildAutofillSchema(fieldDescriptors) {
@@ -1412,8 +1708,8 @@ async function autofillWithAI() {
   } catch (err) {
     console.error('Failed to load profile', err);
   }
-  if (!hasAnyProfileValue(profile)) {
-    setStatus('Set up your Autofill Profile first.', true);
+  if (!hasAnyProfileValue(profile) && !autofillSourceBytes) {
+    setStatus('Set up your Autofill Profile first, or choose a source document above.', true);
     openProfileOverlay();
     return;
   }
@@ -1426,6 +1722,12 @@ async function autofillWithAI() {
     if (availability === 'unavailable') {
       setStatus('The on-device AI model is unavailable on this device.', true);
       return;
+    }
+
+    let sourceContext = null;
+    if (autofillSourceBytes) {
+      setStatus(`Reading ${autofillSourceLabel || 'source document'}…`);
+      sourceContext = await gatherSourceDocumentContext(autofillSourceBytes);
     }
 
     setStatus('Reading field labels…');
@@ -1454,7 +1756,7 @@ async function autofillWithAI() {
     }
 
     setStatus('Matching fields to your profile…');
-    const promptText = buildAutofillPrompt(profile, descriptors);
+    const promptText = buildAutofillPrompt(profile, descriptors, sourceContext);
     const schema = buildAutofillSchema(descriptors);
     let raw;
     try {
@@ -1514,6 +1816,129 @@ async function autofillWithAI() {
 }
 
 els.btnAutofillAI.addEventListener('click', autofillWithAI);
+
+// --- Autofill source-document picker ------------------------------------
+
+let autofillSourceBytes = null;
+let autofillSourceLabel = '';
+
+async function populateAutofillSourceOptions() {
+  const sel = els.autofillSource;
+  const previous = sel.value;
+  sel.innerHTML = '';
+
+  const noneOpt = document.createElement('option');
+  noneOpt.value = '';
+  noneOpt.textContent = 'No source document (Profile only)';
+  sel.appendChild(noneOpt);
+
+  let recents = [];
+  let templates = [];
+  try {
+    recents = await recentGetAll();
+  } catch (err) {
+    console.error('Failed to list recent files for autofill source', err);
+  }
+  try {
+    templates = await templateGetAll();
+  } catch (err) {
+    console.error('Failed to list templates for autofill source', err);
+  }
+
+  if (recents.length) {
+    const group = document.createElement('optgroup');
+    group.label = 'Recent Files';
+    recents
+      .sort((a, b) => b.savedAt - a.savedAt)
+      .forEach((r) => {
+        const opt = document.createElement('option');
+        opt.value = `recent:${r.id}`;
+        opt.textContent = `${r.name}.pdf`;
+        group.appendChild(opt);
+      });
+    sel.appendChild(group);
+  }
+  if (templates.length) {
+    const group = document.createElement('optgroup');
+    group.label = 'Templates';
+    templates.forEach((t) => {
+      const opt = document.createElement('option');
+      opt.value = `template:${t.id}`;
+      opt.textContent = `${t.name}.pdf`;
+      group.appendChild(opt);
+    });
+    sel.appendChild(group);
+  }
+
+  const uploadOpt = document.createElement('option');
+  uploadOpt.value = '__upload__';
+  uploadOpt.textContent = 'Upload a file…';
+  sel.appendChild(uploadOpt);
+
+  if ([...sel.options].some((o) => o.value === previous)) sel.value = previous;
+  else {
+    autofillSourceBytes = null;
+    autofillSourceLabel = '';
+  }
+}
+
+els.autofillSource.addEventListener('change', async () => {
+  const val = els.autofillSource.value;
+  if (val === '__upload__') {
+    els.autofillSourceFile.click();
+    return;
+  }
+  if (!val) {
+    autofillSourceBytes = null;
+    autofillSourceLabel = '';
+    return;
+  }
+  const sep = val.indexOf(':');
+  const kind = val.slice(0, sep);
+  const id = val.slice(sep + 1);
+  try {
+    const all = kind === 'recent' ? await recentGetAll() : kind === 'template' ? await templateGetAll() : [];
+    const entry = all.find((e) => e.id === id);
+    if (!entry) {
+      setStatus('That source document is no longer available.', true);
+      autofillSourceBytes = null;
+      autofillSourceLabel = '';
+      return;
+    }
+    const bytes = entry.snapshot.bytes;
+    autofillSourceBytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    autofillSourceLabel = entry.name;
+  } catch (err) {
+    console.error('Failed to load source document', err);
+    setStatus(`Failed to load source document: ${err.message}`, true);
+    autofillSourceBytes = null;
+    autofillSourceLabel = '';
+  }
+});
+
+els.autofillSourceFile.addEventListener('change', async () => {
+  const file = els.autofillSourceFile.files[0];
+  els.autofillSourceFile.value = '';
+  if (!file) {
+    els.autofillSource.value = '';
+    return;
+  }
+  try {
+    autofillSourceBytes = new Uint8Array(await file.arrayBuffer());
+    autofillSourceLabel = sanitizeBaseName(file.name);
+    const opt = document.createElement('option');
+    opt.value = '__uploaded__';
+    opt.textContent = `${autofillSourceLabel}.pdf (uploaded)`;
+    els.autofillSource.appendChild(opt);
+    els.autofillSource.value = '__uploaded__';
+  } catch (err) {
+    console.error('Failed to read uploaded source document', err);
+    setStatus('Failed to read the uploaded file.', true);
+    autofillSourceBytes = null;
+    autofillSourceLabel = '';
+    els.autofillSource.value = '';
+  }
+});
 
 // --- Insert Page panel -------------------------------------------------
 
@@ -2149,6 +2574,8 @@ async function resetEverything() {
     state.pdfjsDoc.destroy();
     state.pdfjsDoc = null;
   }
+  autofillSourceBytes = null;
+  autofillSourceLabel = '';
   state.originalBytes = null;
   state.numPages = 0;
   state.baseName = 'document';
@@ -2167,6 +2594,7 @@ async function resetEverything() {
   state.redactions = [];
   state.insertions = [];
   state.pageNumbering = null;
+  state.originTemplateId = null;
 
   await clearSession();
 
@@ -2184,6 +2612,7 @@ async function resetEverything() {
   els.pageNumberSection.style.display = 'none';
   els.flattenRow.style.display = 'none';
   els.fieldDesignerOverlay.style.display = 'none';
+  els.saveTemplateRow.style.display = 'none';
   els.summarizeRow.style.display = 'none';
   els.summarySection.style.display = 'none';
   els.summaryOutput.textContent = '';
