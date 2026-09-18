@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Brog's PDF Editor",
-  "version": "1.7.0",
-  "description": "100% client-side PDF editor docked to the browser's side panel: merge, reorder, insert, redact, annotate, fill or add form fields (with AI autofill from a local profile, another document, or a saved template), watermark, number pages, split, and summarize with Chrome's on-device AI. No files ever leave your browser.",
+  "version": "1.8.0",
+  "description": "100% client-side PDF editor docked to the browser's side panel: merge, reorder, insert, redact, annotate, fill or add form fields (with AI autofill from a local profile, another document, or a saved template), watermark, number pages, split, OCR scanned pages, and summarize with Chrome's on-device AI. No files ever leave your browser.",
   "action": {
     "default_icon": {
       "16": "icons/icon16.png",
@@ -24,6 +24,6 @@
   },
   "permissions": ["downloads", "sidePanel", "unlimitedStorage"],
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   }
 }

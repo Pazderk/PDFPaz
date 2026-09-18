@@ -75,6 +75,7 @@ const els = {
   summarySection: document.getElementById('summarySection'),
   summaryStatus: document.getElementById('summaryStatus'),
   summaryOutput: document.getElementById('summaryOutput'),
+  btnRunOcr: document.getElementById('btnRunOcr'),
   watermarkSection: document.getElementById('watermarkSection'),
   watermarkText: document.getElementById('watermarkText'),
   watermarkSize: document.getElementById('watermarkSize'),
@@ -133,6 +134,7 @@ const state = {
   insertions: [],           // {id, anchor: 'start'|'end'|{after:idx}, type:'blank'|'image', width, height, imageBytes, imageFormat}
   pageNumbering: null,      // null | {template, position, fontSize, color, pageIndices:[...]}
   originTemplateId: null,   // id of the Template this document was opened from, if any (enables "Update Template")
+  ocrText: new Map(),       // 0-based original index -> OCR'd text (in-memory only, not persisted, regenerable)
 };
 
 function setStatus(message, isError = false) {
@@ -1044,6 +1046,7 @@ async function loadBytes(bytes, baseName) {
   state.insertions = [];
   state.pageNumbering = null;
   state.originTemplateId = null;
+  state.ocrText = new Map();
 
   if (state.pdfjsDoc) {
     state.pdfjsDoc.destroy();
@@ -2683,6 +2686,7 @@ async function resetEverything() {
   state.insertions = [];
   state.pageNumbering = null;
   state.originTemplateId = null;
+  state.ocrText = new Map();
 
   await clearSession();
 
@@ -2706,6 +2710,7 @@ async function resetEverything() {
   els.summarySection.style.display = 'none';
   els.summaryOutput.textContent = '';
   els.summaryStatus.textContent = '';
+  els.btnRunOcr.style.display = 'none';
   els.keepInput.value = '';
   els.fileInput.value = '';
   els.mergeFileInput.value = '';
@@ -3124,6 +3129,77 @@ els.flattenCheckbox.addEventListener('change', () => {
   persistSession();
 });
 
+// --- OCR (Tesseract.js, vendored locally under lib/tesseract/, zero network) -
+// Loaded lazily — only when a scanned/image PDF actually needs it — so the
+// ~6MB of OCR assets never cost anything on a normal panel open. The worker
+// and its trained-data are reused across pages and documents; only the
+// per-page recognized text is cached, and only in memory (state.ocrText),
+// since it's cheap to regenerate and doesn't belong in session persistence.
+
+let tesseractLoadPromise = null;
+function loadTesseractLib() {
+  if (typeof Tesseract !== 'undefined') return Promise.resolve();
+  if (!tesseractLoadPromise) {
+    tesseractLoadPromise = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = chrome.runtime.getURL('lib/tesseract/tesseract.min.js');
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error('Failed to load the bundled OCR library.'));
+      document.head.appendChild(s);
+    });
+  }
+  return tesseractLoadPromise;
+}
+
+let ocrWorkerPromise = null;
+function getOcrWorker() {
+  if (!ocrWorkerPromise) {
+    ocrWorkerPromise = loadTesseractLib().then(() =>
+      Tesseract.createWorker('eng', 1, {
+        workerPath: chrome.runtime.getURL('lib/tesseract/worker.min.js'),
+        corePath: chrome.runtime.getURL('lib/tesseract/tesseract-core-simd-lstm.js'),
+        langPath: chrome.runtime.getURL('lib/tesseract/lang'),
+        // The blob-URL worker indirection tesseract.js defaults to trips the
+        // extension's CSP (importScripts from a blob: worker can't load a
+        // chrome-extension:// script) — loading the worker script directly
+        // avoids that.
+        workerBlobURL: false,
+        gzip: true,
+      })
+    ).catch((err) => {
+      ocrWorkerPromise = null;
+      throw err;
+    });
+  }
+  return ocrWorkerPromise;
+}
+
+async function ocrPage(pageIndex) {
+  if (state.ocrText.has(pageIndex)) return state.ocrText.get(pageIndex);
+  const worker = await getOcrWorker();
+  const page = await state.pdfjsDoc.getPage(pageIndex + 1);
+  const viewport = page.getViewport({ scale: 2 });
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const ctx = canvas.getContext('2d');
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  const { data } = await worker.recognize(canvas);
+  state.ocrText.set(pageIndex, data.text);
+  return data.text;
+}
+
+async function runOcrOnActivePages(onProgress) {
+  const pageIndices = [];
+  for (let i = 0; i < state.numPages; i++) {
+    if (!state.deletedPages.has(i)) pageIndices.push(i);
+  }
+  for (let n = 0; n < pageIndices.length; n++) {
+    if (onProgress) onProgress(n + 1, pageIndices.length);
+    await ocrPage(pageIndices[n]);
+  }
+}
+
 // --- Chrome on-device AI summarize -----------------------------------------
 
 async function extractActiveText() {
@@ -3132,7 +3208,11 @@ async function extractActiveText() {
     if (state.deletedPages.has(i)) continue;
     const page = await state.pdfjsDoc.getPage(i + 1);
     const content = await page.getTextContent();
-    combined += content.items.map((it) => it.str).join(' ') + '\n\n';
+    let pageText = content.items.map((it) => it.str).join(' ');
+    if (!pageText.trim() && state.ocrText.has(i)) {
+      pageText = state.ocrText.get(i);
+    }
+    combined += pageText + '\n\n';
   }
   return combined;
 }
@@ -3142,6 +3222,7 @@ async function summarizeDocument() {
   els.btnSummarize.disabled = true;
   els.summarySection.style.display = 'block';
   els.summaryOutput.textContent = '';
+  els.btnRunOcr.style.display = 'none';
   els.summaryStatus.textContent = 'Checking availability…';
   try {
     if (typeof Summarizer === 'undefined') {
@@ -3159,8 +3240,10 @@ async function summarizeDocument() {
     const text = await extractActiveText();
     if (!text.trim()) {
       els.summaryStatus.textContent = 'No extractable text found (this may be a scanned/image PDF).';
+      els.btnRunOcr.style.display = 'inline-block';
       return;
     }
+    els.btnRunOcr.style.display = 'none';
 
     const focus = els.summaryFocus.value.trim();
     let sharedContext = `Text extracted from a PDF named ${state.baseName}.pdf.`;
@@ -3244,6 +3327,24 @@ async function summarizeDocument() {
 }
 
 els.btnSummarize.addEventListener('click', summarizeDocument);
+
+els.btnRunOcr.addEventListener('click', async () => {
+  els.btnRunOcr.disabled = true;
+  els.btnSummarize.disabled = true;
+  try {
+    await runOcrOnActivePages((done, total) => {
+      els.summaryStatus.textContent = `Running on-device OCR… page ${done} of ${total}`;
+    });
+    els.btnRunOcr.style.display = 'none';
+    await summarizeDocument();
+  } catch (err) {
+    console.error(err);
+    els.summaryStatus.textContent = `OCR failed: ${err.message}`;
+  } finally {
+    els.btnRunOcr.disabled = false;
+    els.btnSummarize.disabled = false;
+  }
+});
 
 // --- Wiring ------------------------------------------------------------
 
