@@ -10,6 +10,7 @@ Brog's PDF Editor — a 100% client-side Chrome side-panel extension for editing
 - **Insert Page** — add a blank page or an image (PNG/JPEG) as a new page, anchored before/after any page
 - **Redact** — drag to black out a region; the page is rasterized on export so the underlying content is actually removed, not just covered
 - **Fill Form** — detects existing AcroForm fields (text, checkbox, dropdown, radio, option list) and lets you edit their values
+- **Autofill with AI** — uses Chrome's on-device Prompt API and a locally-saved Autofill Profile (name, address, email, etc.) to guess field values, using nearby page text to make sense of cryptic field names. Everything stays editable before you press Apply, and the profile never leaves your browser
 - **Add Field** — draw new text, checkbox, or dropdown fields directly on a page, even on a flat (non-fillable) PDF
 - **Flatten** — bake filled values into the page content and remove interactivity on export
 - **Watermark** — stamp text (e.g. "CONFIDENTIAL", "DRAFT") on all or selected pages, with configurable size, rotation, color, opacity, and optional tiling

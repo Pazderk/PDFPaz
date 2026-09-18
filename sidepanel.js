@@ -11,6 +11,14 @@ const els = {
   mergeRow: document.getElementById('mergeRow'),
   btnMerge: document.getElementById('btnMerge'),
   mergeFileInput: document.getElementById('mergeFileInput'),
+  btnEditProfile: document.getElementById('btnEditProfile'),
+  profileOverlay: document.getElementById('profileOverlay'),
+  profileFormFields: document.getElementById('profileFormFields'),
+  profileNotes: document.getElementById('profileNotes'),
+  profileSave: document.getElementById('profileSave'),
+  profileClear: document.getElementById('profileClear'),
+  profileClose: document.getElementById('profileClose'),
+  btnAutofillAI: document.getElementById('btnAutofillAI'),
   recentSection: document.getElementById('recentSection'),
   recentList: document.getElementById('recentList'),
   docInfo: document.getElementById('docInfo'),
@@ -116,18 +124,42 @@ function setBusy(busy) {
 // 'session' holds the single currently-open document (out-of-line key 'current').
 // 'recent' holds a capped history of documents that were previously open,
 // keyed by an in-line generated id, to support reopening them later.
+// 'profile' holds a single record (key 'default') with the user's saved
+// Autofill Profile — never transmitted anywhere, only read locally to build
+// the on-device AI prompt for the Autofill tool.
 
 const MAX_RECENT = 8;
 
 function openDatabase() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('pdfpaz-db', 2);
+    const req = indexedDB.open('pdfpaz-db', 3);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains('session')) db.createObjectStore('session');
       if (!db.objectStoreNames.contains('recent')) db.createObjectStore('recent', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('profile')) db.createObjectStore('profile');
     };
     req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function profileSet(value) {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('profile', 'readwrite');
+    tx.objectStore('profile').put(value, 'default');
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function profileGet() {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('profile', 'readonly');
+    const req = tx.objectStore('profile').get('default');
+    req.onsuccess = () => resolve(req.result || null);
     req.onerror = () => reject(req.error);
   });
 }
@@ -337,6 +369,97 @@ async function openRecentSession(id) {
     await refreshRecentList();
   }
 }
+
+// --- Autofill Profile --------------------------------------------------
+// A small, locally-stored profile used only to build the prompt for the
+// on-device "Autofill with AI" tool. Never transmitted anywhere.
+
+const PROFILE_FIELDS = [
+  { key: 'firstName', label: 'First Name' },
+  { key: 'lastName', label: 'Last Name' },
+  { key: 'email', label: 'Email' },
+  { key: 'phone', label: 'Phone' },
+  { key: 'address', label: 'Street Address' },
+  { key: 'city', label: 'City' },
+  { key: 'state', label: 'State / Province' },
+  { key: 'zip', label: 'ZIP / Postal Code' },
+  { key: 'country', label: 'Country' },
+  { key: 'dob', label: 'Date of Birth' },
+  { key: 'company', label: 'Company / Organization' },
+  { key: 'jobTitle', label: 'Job Title' },
+];
+
+function renderProfileFormFields(profile) {
+  els.profileFormFields.innerHTML = '';
+  PROFILE_FIELDS.forEach((f) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'profile-field';
+    const label = document.createElement('label');
+    label.textContent = f.label;
+    label.htmlFor = `profile_${f.key}`;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'text-input';
+    input.id = `profile_${f.key}`;
+    input.value = (profile && profile[f.key]) || '';
+    wrap.appendChild(label);
+    wrap.appendChild(input);
+    els.profileFormFields.appendChild(wrap);
+  });
+  els.profileNotes.value = (profile && profile.notes) || '';
+}
+
+function readProfileFormFields() {
+  const profile = {};
+  PROFILE_FIELDS.forEach((f) => {
+    const input = document.getElementById(`profile_${f.key}`);
+    profile[f.key] = input ? input.value.trim() : '';
+  });
+  profile.notes = els.profileNotes.value.trim();
+  return profile;
+}
+
+function hasAnyProfileValue(profile) {
+  if (!profile) return false;
+  return Object.values(profile).some((v) => v && String(v).trim());
+}
+
+async function openProfileOverlay() {
+  let profile = null;
+  try {
+    profile = await profileGet();
+  } catch (err) {
+    console.error('Failed to load profile', err);
+  }
+  renderProfileFormFields(profile);
+  els.profileOverlay.style.display = 'flex';
+}
+
+els.btnEditProfile.addEventListener('click', openProfileOverlay);
+els.profileClose.addEventListener('click', () => {
+  els.profileOverlay.style.display = 'none';
+});
+els.profileSave.addEventListener('click', async () => {
+  const profile = readProfileFormFields();
+  try {
+    await profileSet(profile);
+    setStatus('Autofill profile saved.');
+    els.profileOverlay.style.display = 'none';
+  } catch (err) {
+    console.error(err);
+    setStatus(`Failed to save profile: ${err.message}`, true);
+  }
+});
+els.profileClear.addEventListener('click', async () => {
+  try {
+    await profileSet({});
+    renderProfileFormFields({});
+    setStatus('Autofill profile cleared.');
+  } catch (err) {
+    console.error(err);
+    setStatus(`Failed to clear profile: ${err.message}`, true);
+  }
+});
 
 // --- Form field detection (pdf-lib) -----------------------------------
 
@@ -1041,17 +1164,31 @@ function setActiveTool(tool) {
 
 const NEW_FIELD_TYPE_MAP = { text: 'PDFTextField', checkbox: 'PDFCheckBox', dropdown: 'PDFDropdown' };
 
-function renderFormFieldsPanel() {
-  const container = els.formFieldsList;
-  container.innerHTML = '';
-  const existing = state.formFieldsMeta.filter((f) => f.type !== 'PDFButton' && f.type !== 'PDFSignature');
+// Field names most recently set by Autofill, purely so their rows get a
+// visual "please review me" highlight until the user touches them.
+let lastAutofilledNames = new Set();
+
+// Merges detected AcroForm fields and user-created fields into one normalized
+// shape ({name, type, pageIndex, rect, options}) used by the Fill Form panel
+// and by Autofill's field-label matching.
+function getAllFillableFieldDescriptors() {
+  const existing = state.formFieldsMeta
+    .filter((f) => f.type !== 'PDFButton' && f.type !== 'PDFSignature')
+    .map((f) => ({ name: f.name, type: f.type, pageIndex: f.pageIndex, rect: f.rect, options: f.options }));
   const created = state.newFields.map((f) => ({
     name: f.name,
     type: NEW_FIELD_TYPE_MAP[f.type] || 'PDFTextField',
     pageIndex: f.pageIndex,
+    rect: f.rect,
     options: f.options,
   }));
-  const fillable = [...existing, ...created];
+  return [...existing, ...created];
+}
+
+function renderFormFieldsPanel() {
+  const container = els.formFieldsList;
+  container.innerHTML = '';
+  const fillable = getAllFillableFieldDescriptors();
   if (!fillable.length) {
     container.innerHTML = '<div class="hint-text">No fillable fields detected in this PDF. Use "Add Field" to create some.</div>';
     return;
@@ -1073,6 +1210,12 @@ function renderFormFieldsPanel() {
 function buildFieldRow(f) {
   const row = document.createElement('div');
   row.className = 'field-row';
+  if (lastAutofilledNames.has(f.name)) row.classList.add('autofilled');
+  const unmark = () => {
+    lastAutofilledNames.delete(f.name);
+    row.classList.remove('autofilled');
+  };
+
   const label = document.createElement('label');
   label.textContent = f.name;
   label.title = f.name;
@@ -1086,6 +1229,7 @@ function buildFieldRow(f) {
     input.checked = !!currentVal;
     input.addEventListener('change', () => {
       state.formValues.set(f.name, input.checked);
+      unmark();
     });
   } else if (f.type === 'PDFDropdown' || f.type === 'PDFRadioGroup' || f.type === 'PDFOptionList') {
     input = document.createElement('select');
@@ -1102,6 +1246,7 @@ function buildFieldRow(f) {
     });
     input.addEventListener('change', () => {
       state.formValues.set(f.name, input.value);
+      unmark();
     });
   } else {
     input = document.createElement('input');
@@ -1109,11 +1254,266 @@ function buildFieldRow(f) {
     input.value = currentVal || '';
     input.addEventListener('input', () => {
       state.formValues.set(f.name, input.value);
+      unmark();
     });
   }
   row.appendChild(input);
   return row;
 }
+
+// --- Autofill with AI --------------------------------------------------
+// Uses Chrome's on-device Prompt API (LanguageModel) to map the saved
+// Autofill Profile onto this document's fillable fields. Everything stays
+// local — the model runs on-device and nothing is transmitted anywhere.
+
+// Finds, for each field's rect, the nearest text on the same page that reads
+// like a label — immediately to its left (e.g. "Name: ____"), or just above
+// it (e.g. "Name" over a box) — to help the model make sense of cryptic
+// internal field names like "Text1_2".
+async function extractFieldLabelHints(fields) {
+  const byPage = new Map();
+  fields.forEach((f) => {
+    if (!f.rect) return;
+    if (!byPage.has(f.pageIndex)) byPage.set(f.pageIndex, []);
+    byPage.get(f.pageIndex).push(f);
+  });
+
+  const hints = new Map();
+  for (const [pageIndex, pageFields] of byPage) {
+    let items = [];
+    try {
+      const page = await state.pdfjsDoc.getPage(pageIndex + 1);
+      const content = await page.getTextContent();
+      items = content.items
+        .filter((it) => it.str && it.str.trim())
+        .map((it) => ({
+          str: it.str.trim(),
+          x: it.transform[4],
+          y: it.transform[5],
+          width: it.width,
+          height: it.height || Math.abs(it.transform[3]) || 10,
+        }));
+    } catch (err) {
+      items = [];
+    }
+
+    for (const f of pageFields) {
+      const rect = f.rect;
+      const fieldMidY = rect.y + rect.height / 2;
+      let bestLeft = null;
+      let bestLeftDist = Infinity;
+      let bestAbove = null;
+      let bestAboveDist = Infinity;
+      for (const it of items) {
+        const itemMidY = it.y + it.height / 2;
+        const verticalOverlap = Math.abs(itemMidY - fieldMidY) < Math.max(rect.height, it.height) * 0.75 + 4;
+        if (verticalOverlap) {
+          const dist = rect.x - (it.x + it.width);
+          if (dist > -4 && dist < 160 && dist < bestLeftDist) {
+            bestLeft = it.str;
+            bestLeftDist = dist;
+          }
+        }
+        const isAboveRow = it.y >= rect.y + rect.height - 2 && Math.abs(it.x - rect.x) < 220;
+        if (isAboveRow) {
+          const dist = it.y - (rect.y + rect.height);
+          if (dist >= -2 && dist < 40 && dist < bestAboveDist) {
+            bestAbove = it.str;
+            bestAboveDist = dist;
+          }
+        }
+      }
+      hints.set(f, bestLeft || bestAbove || null);
+    }
+  }
+  return hints;
+}
+
+function buildAutofillPrompt(profile, fieldDescriptors) {
+  const profileLines = PROFILE_FIELDS
+    .map((f) => [f.label, profile[f.key]])
+    .concat([['Notes', profile.notes]])
+    .filter(([, v]) => v)
+    .map(([label, v]) => `${label}: ${v}`)
+    .join('\n');
+
+  const fieldsJson = JSON.stringify(
+    fieldDescriptors.map((f) => ({ id: f.id, label: f.label, type: f.type, options: f.options })),
+    null,
+    2
+  );
+
+  return [
+    "You are filling out a PDF form using the person's saved profile information below.",
+    '',
+    'PROFILE:',
+    profileLines || '(no profile information provided)',
+    '',
+    'FORM FIELDS (JSON array; each has an id, a best-guess label taken from text near the field, a type, and options if it is a choice field):',
+    fieldsJson,
+    '',
+    'For each field id, decide the best value from the profile. Rules:',
+    '- If type is "checkbox", answer "true" or "false".',
+    '- If type is "choice", answer with EXACTLY one of the listed options, verbatim, or "" if none fit.',
+    '- If type is "text" and no profile value clearly matches, answer "" — never invent a value.',
+    '- Combine first/last name if a field asks for a full name.',
+    '',
+    'Respond with a single JSON object mapping each field id to its string value, e.g. {"f0":"Jane","f1":""}.',
+  ].join('\n');
+}
+
+function buildAutofillSchema(fieldDescriptors) {
+  const properties = {};
+  fieldDescriptors.forEach((f) => {
+    properties[f.id] = { type: 'string' };
+  });
+  return {
+    type: 'object',
+    properties,
+    required: fieldDescriptors.map((f) => f.id),
+    additionalProperties: false,
+  };
+}
+
+function parseAutofillResponse(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]);
+      } catch (err2) {
+        // fall through to the throw below
+      }
+    }
+    throw new Error('Could not parse the AI response as JSON.');
+  }
+}
+
+async function autofillWithAI() {
+  if (typeof LanguageModel === 'undefined') {
+    setStatus(
+      "Chrome's built-in AI isn't available in this browser. It requires a recent Chrome (138+) with on-device AI.",
+      true
+    );
+    return;
+  }
+
+  const fields = getAllFillableFieldDescriptors();
+  if (!fields.length) {
+    setStatus('No fillable fields to autofill.', true);
+    return;
+  }
+
+  let profile = null;
+  try {
+    profile = await profileGet();
+  } catch (err) {
+    console.error('Failed to load profile', err);
+  }
+  if (!hasAnyProfileValue(profile)) {
+    setStatus('Set up your Autofill Profile first.', true);
+    openProfileOverlay();
+    return;
+  }
+
+  els.btnAutofillAI.disabled = true;
+  setStatus('Checking availability…');
+  let session;
+  try {
+    const availability = await LanguageModel.availability();
+    if (availability === 'unavailable') {
+      setStatus('The on-device AI model is unavailable on this device.', true);
+      return;
+    }
+
+    setStatus('Reading field labels…');
+    const hints = await extractFieldLabelHints(fields);
+    const descriptors = fields.map((f, i) => ({
+      id: `f${i}`,
+      label: hints.get(f) || f.name,
+      type: f.type === 'PDFCheckBox' ? 'checkbox' : f.options && f.options.length ? 'choice' : 'text',
+      options: f.options && f.options.length ? f.options : undefined,
+    }));
+
+    setStatus('Preparing on-device model…');
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), 60000);
+    try {
+      session = await LanguageModel.create({
+        signal: abortController.signal,
+        monitor(m) {
+          m.addEventListener('downloadprogress', (e) => {
+            setStatus(`Downloading on-device model… ${Math.round(e.loaded * 100)}%`);
+          });
+        },
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    setStatus('Matching fields to your profile…');
+    const promptText = buildAutofillPrompt(profile, descriptors);
+    const schema = buildAutofillSchema(descriptors);
+    let raw;
+    try {
+      raw = await session.prompt(promptText, { responseConstraint: schema, signal: abortController.signal });
+    } catch (err) {
+      // responseConstraint may not be supported everywhere — retry plainly.
+      raw = await session.prompt(`${promptText}\n\nRespond with ONLY the JSON object and no other text.`, {
+        signal: abortController.signal,
+      });
+    }
+
+    const mapping = parseAutofillResponse(raw);
+    const filledNames = new Set();
+    fields.forEach((f, i) => {
+      const val = mapping[`f${i}`];
+      if (val === undefined || val === null) return;
+      const trimmed = String(val).trim();
+      if (!trimmed) return;
+      if (f.type === 'PDFCheckBox') {
+        state.formValues.set(f.name, /^(true|yes|checked|1)$/i.test(trimmed));
+        filledNames.add(f.name);
+      } else if (f.options && f.options.length) {
+        const match = f.options.find((o) => o.toLowerCase() === trimmed.toLowerCase());
+        if (match) {
+          state.formValues.set(f.name, match);
+          filledNames.add(f.name);
+        }
+      } else {
+        state.formValues.set(f.name, trimmed);
+        filledNames.add(f.name);
+      }
+    });
+
+    lastAutofilledNames = filledNames;
+    if (state.activeTool === 'fill-form') renderFormFieldsPanel();
+    setStatus(`AI filled ${filledNames.size} of ${fields.length} field(s) — review the values below, then press Apply.`);
+  } catch (err) {
+    console.error(err);
+    if (err.name === 'AbortError') {
+      setStatus(
+        "Timed out waiting for Chrome's on-device model to become ready. It may still be downloading in the background — try again shortly.",
+        true
+      );
+    } else {
+      setStatus(`Autofill failed: ${err.message}`, true);
+    }
+  } finally {
+    if (session) {
+      try {
+        session.destroy();
+      } catch (err) {
+        // ignore
+      }
+    }
+    els.btnAutofillAI.disabled = false;
+  }
+}
+
+els.btnAutofillAI.addEventListener('click', autofillWithAI);
 
 // --- Insert Page panel -------------------------------------------------
 

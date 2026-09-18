@@ -527,6 +527,22 @@
   .thumb-card.insertion canvas { border: 1px solid var(--border); }
 
   .designer-box.redact { background: rgba(0,0,0,0.8); border-color: #000; }
+
+  .profile-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    padding: 10px 14px;
+  }
+  .profile-field { display: flex; flex-direction: column; gap: 3px; }
+  .profile-field label { font-size: 10.5px; color: var(--text-dim); }
+  .profile-notes-wrap { padding: 0 14px 6px; display: flex; flex-direction: column; }
+  #profileNotes { resize: vertical; }
+
+  #autofillRow { padding: 0 0 10px; }
+  #autofillRow .hint-text { padding: 4px 0 0; }
+  #btnAutofillAI.pending { position: relative; }
+  .autofilled { box-shadow: 0 0 0 1.5px var(--accent) inset; border-radius: 4px; }
 </style>
 </head>
 <body>
@@ -543,6 +559,7 @@
   <div id="mergeRow">
     <button class="btn" id="btnMerge">Merge PDFs&hellip;</button>
     <input type="file" id="mergeFileInput" accept="application/pdf,.pdf" multiple style="display:none;" />
+    <button class="btn" id="btnEditProfile">Autofill Profile&hellip;</button>
   </div>
 
   <div id="recentSection">
@@ -604,6 +621,10 @@
 
   <section class="panel-block" id="formFieldsSection">
     <div class="block-label">Fill Form</div>
+    <div id="autofillRow">
+      <button class="btn" id="btnAutofillAI">Autofill with AI &#10024;</button>
+      <div class="hint-text">Uses Chrome's on-device AI and your saved Autofill Profile to guess values &mdash; always review before pressing Apply.</div>
+    </div>
     <div id="formFieldsList"></div>
   </section>
 
@@ -719,6 +740,25 @@
           <button class="btn primary" id="designerAdd">Add Field</button>
           <button class="btn" id="designerCancel">Cancel</button>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="profileOverlay" class="designer-overlay">
+    <div class="designer-modal">
+      <div class="designer-header">
+        <span>Autofill Profile</span>
+        <button class="btn" id="profileClose">Close</button>
+      </div>
+      <div class="designer-hint">Used only to build a prompt for Chrome's on-device AI when you click "Autofill with AI" &mdash; stored locally in this browser, never sent anywhere.</div>
+      <div id="profileFormFields" class="profile-fields"></div>
+      <div class="profile-notes-wrap">
+        <label for="profileNotes" class="hint-text" style="padding:0 0 4px;">Anything else (avoid very sensitive numbers like a full SSN)</label>
+        <textarea id="profileNotes" class="text-input" rows="3" placeholder="e.g. veteran status, emergency contact, employer address&hellip;"></textarea>
+      </div>
+      <div class="row" style="padding: 10px 14px 14px;">
+        <button class="btn primary" id="profileSave">Save Profile</button>
+        <button class="btn danger" id="profileClear">Clear Profile</button>
       </div>
     </div>
   </div>
