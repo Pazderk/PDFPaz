@@ -1629,12 +1629,32 @@ async function extractFieldLabelHints(fields) {
   return hints;
 }
 
+// A source document can be scanned (no native text layer) just as easily as
+// the working document can — capped at a handful of pages since this text is
+// supplementary context for Autofill, not the main document, and OCR is slow.
+const SOURCE_DOC_MAX_OCR_PAGES = 5;
+
+async function ocrDocumentPageText(doc, pageIndex) {
+  const worker = await getOcrWorker();
+  const page = await doc.getPage(pageIndex + 1);
+  const viewport = page.getViewport({ scale: OCR_RASTER_SCALE });
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const ctx = canvas.getContext('2d');
+  await page.render({ canvasContext: ctx, viewport }).promise;
+  const { data } = await worker.recognize(canvas, {}, { text: true });
+  return data.text;
+}
+
 // Reads a PDF picked as an autofill "source document" — its own filled
 // AcroForm values (if any) plus its general text content (capped, best
 // effort) — so the on-device model can pull facts specific to this one
 // document (a case number, an order date, an amount) on top of the saved
-// Profile. Entirely local, same as everything else here.
-async function gatherSourceDocumentContext(bytes) {
+// Profile. Entirely local, same as everything else here. Falls back to OCR,
+// page by page, for any page with no native text (e.g. a scanned source
+// document), same as Summarize does for the working document.
+async function gatherSourceDocumentContext(bytes, onStatus) {
   const context = { fieldPairs: [], text: '' };
 
   try {
@@ -1652,11 +1672,22 @@ async function gatherSourceDocumentContext(bytes) {
   try {
     doc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
     let text = '';
+    let ocrPagesUsed = 0;
     const maxPages = Math.min(doc.numPages, 20);
     for (let i = 1; i <= maxPages; i++) {
       const page = await doc.getPage(i);
       const content = await page.getTextContent();
-      text += content.items.map((it) => it.str).join(' ') + '\n';
+      let pageText = content.items.map((it) => it.str).join(' ');
+      if (!pageText.trim() && ocrPagesUsed < SOURCE_DOC_MAX_OCR_PAGES) {
+        try {
+          if (onStatus) onStatus(`Running OCR on source document (page ${i})…`);
+          pageText = await ocrDocumentPageText(doc, i - 1);
+          ocrPagesUsed++;
+        } catch (err) {
+          console.error(`Failed to OCR source document page ${i}`, err);
+        }
+      }
+      text += pageText + '\n';
       if (text.length > 8000) break;
     }
     context.text = text.slice(0, 8000);
@@ -1786,7 +1817,7 @@ async function autofillWithAI() {
     let sourceContext = null;
     if (autofillSourceBytes) {
       setStatus(`Reading ${autofillSourceLabel || 'source document'}…`);
-      sourceContext = await gatherSourceDocumentContext(autofillSourceBytes);
+      sourceContext = await gatherSourceDocumentContext(autofillSourceBytes, setStatus);
     }
 
     setStatus('Reading field labels…');
