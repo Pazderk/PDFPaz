@@ -9,6 +9,7 @@ Brog's PDF Editor — a 100% client-side Chrome side-panel extension for editing
 - **Reorder** — drag thumbnails to reorder pages; takes effect immediately
 - **Insert Page** — add a blank page or an image (PNG/JPEG) as a new page, anchored before/after any page
 - **Redact** — drag to black out a region; the page is rasterized on export so the underlying content is actually removed, not just covered
+- **Annotate** — Highlight (drag a translucent colored box over text) and Note (click to place a small marker with a typed comment). Flattened as drawn graphics on export, like Redact — not interactive PDF annotation objects
 - **Fill Form** — detects existing AcroForm fields (text, checkbox, dropdown, radio, option list) and lets you edit their values
 - **Autofill with AI** — uses Chrome's on-device Prompt API and a locally-saved Autofill Profile (name, address, email, etc.) to guess field values, using nearby page text to make sense of cryptic field names. Optionally combine with a source document (a Recent File, a Template, or an upload) — its own filled fields and text are pulled into the same prompt, useful for facts specific to one document (a case number, an amount) that the profile alone wouldn't have. Everything stays editable before you press Apply, and nothing leaves your browser
 - **Templates** — save a document (with any default field values already filled in) as a named, reusable template for PDFs you fill out repeatedly. "Use" always loads a fresh working copy; the template itself is untouched until you explicitly "Update" it

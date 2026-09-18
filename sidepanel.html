@@ -530,6 +530,15 @@
   .thumb-card.insertion canvas { border: 1px solid var(--border); }
 
   .designer-box.redact { background: rgba(0,0,0,0.8); border-color: #000; }
+  .designer-box.highlight { border-width: 1.5px; border-style: solid; }
+
+  .note-marker {
+    position: absolute;
+    border-radius: 50%;
+    border: 1.5px solid rgba(0,0,0,0.45);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.5);
+    cursor: default;
+  }
 
   .profile-fields {
     display: grid;
@@ -616,6 +625,7 @@
       <button class="btn tool-btn" id="toolAddField" data-tool="add-field">Add Field</button>
       <button class="btn tool-btn" id="toolWatermark" data-tool="watermark">Watermark</button>
       <button class="btn tool-btn" id="toolRedact" data-tool="redact">Redact</button>
+      <button class="btn tool-btn" id="toolAnnotate" data-tool="annotate">Annotate</button>
       <button class="btn tool-btn" id="toolInsertPage" data-tool="insert-page">Insert Page</button>
       <button class="btn tool-btn" id="toolPageNumbers" data-tool="page-numbers">Page Numbers</button>
       <button class="btn tool-btn" id="toolSplit" data-tool="split">Split into Pages</button>
@@ -678,6 +688,18 @@
   <section class="panel-block" id="redactSection">
     <div class="block-label">Redact</div>
     <div class="hint-text">Click a page thumbnail below, then drag to black out a region. Redacted pages are flattened to an image on export &mdash; the covered content is actually removed, not just hidden, but any form fields or annotations on that page are removed too.</div>
+  </section>
+
+  <section class="panel-block" id="annotateSection">
+    <div class="block-label">Annotate</div>
+    <div class="row wm-row">
+      <label><input type="radio" name="annotateMode" value="highlight" id="annotateModeHighlight" checked /> Highlight</label>
+      <label><input type="radio" name="annotateMode" value="note" id="annotateModeNote" /> Note</label>
+    </div>
+    <div class="row wm-row" id="highlightColorRow">
+      <label>Color <input type="color" id="highlightColor" value="#ffeb3b" /></label>
+    </div>
+    <div class="hint-text" id="annotateHint">Click a page thumbnail below, then drag to highlight a region.</div>
   </section>
 
   <section class="panel-block" id="insertPageSection">
@@ -760,6 +782,14 @@
         <div class="row">
           <button class="btn primary" id="designerAdd">Add Field</button>
           <button class="btn" id="designerCancel">Cancel</button>
+        </div>
+      </div>
+      <div id="designerNoteForm" class="designer-form">
+        <textarea id="designerNoteText" class="text-input" rows="3" placeholder="Note text"></textarea>
+        <label class="hint-text">Color <input type="color" id="designerNoteColor" value="#ffeb3b" /></label>
+        <div class="row">
+          <button class="btn primary" id="designerNoteAdd">Add Note</button>
+          <button class="btn" id="designerNoteCancel">Cancel</button>
         </div>
       </div>
     </div>

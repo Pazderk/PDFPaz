@@ -63,6 +63,11 @@ const els = {
   designerAdd: document.getElementById('designerAdd'),
   designerCancel: document.getElementById('designerCancel'),
   designerClose: document.getElementById('designerClose'),
+  designerNoteForm: document.getElementById('designerNoteForm'),
+  designerNoteText: document.getElementById('designerNoteText'),
+  designerNoteColor: document.getElementById('designerNoteColor'),
+  designerNoteAdd: document.getElementById('designerNoteAdd'),
+  designerNoteCancel: document.getElementById('designerNoteCancel'),
   summarizeRow: document.getElementById('summarizeRow'),
   summaryFocus: document.getElementById('summaryFocus'),
   summaryLength: document.getElementById('summaryLength'),
@@ -81,6 +86,12 @@ const els = {
   watermarkScopeAll: document.getElementById('watermarkScopeAll'),
   watermarkScopeSelected: document.getElementById('watermarkScopeSelected'),
   redactSection: document.getElementById('redactSection'),
+  annotateSection: document.getElementById('annotateSection'),
+  annotateModeHighlight: document.getElementById('annotateModeHighlight'),
+  annotateModeNote: document.getElementById('annotateModeNote'),
+  highlightColorRow: document.getElementById('highlightColorRow'),
+  highlightColor: document.getElementById('highlightColor'),
+  annotateHint: document.getElementById('annotateHint'),
   insertPageSection: document.getElementById('insertPageSection'),
   insertTypeBlank: document.getElementById('insertTypeBlank'),
   insertTypeImage: document.getElementById('insertTypeImage'),
@@ -109,7 +120,7 @@ const state = {
   rotations: new Map(),     // 0-based original index -> committed additional degrees (0/90/180/270)
   pageOrder: [],             // permutation of original 0-based indices, controls display/export order
   activeTool: null,          // null | 'remove' | 'rotate-selected' | 'rotate-all' | 'fill-form' | 'add-field'
-                              // | 'watermark' | 'redact' | 'insert-page' | 'page-numbers' | 'split' | 'export'
+                              // | 'watermark' | 'redact' | 'annotate' | 'insert-page' | 'page-numbers' | 'split' | 'export'
   hasAcroForm: false,       // whether the source PDF already has an AcroForm
   formFieldsMeta: [],       // detected existing fields: {name, type, pageIndex, rect, options, currentValue}
   formValues: new Map(),    // field name -> value (string | boolean), covers existing + newly added fields
@@ -117,6 +128,8 @@ const state = {
   flattenForm: false,       // whether to flatten the form (bake values, remove interactivity) on export/split
   watermark: null,          // null | {text, fontSize, rotation, color, opacity, tile, pageIndices:[...]}
   redactions: [],           // {id, pageIndex, rect:{x,y,width,height} in PDF pts}
+  annotations: [],          // {id, pageIndex, type:'highlight', rect:{x,y,width,height}, color}
+                             // | {id, pageIndex, type:'note', point:{x,y}, color, text}
   insertions: [],           // {id, anchor: 'start'|'end'|{after:idx}, type:'blank'|'image', width, height, imageBytes, imageFormat}
   pageNumbering: null,      // null | {template, position, fontSize, color, pageIndices:[...]}
   originTemplateId: null,   // id of the Template this document was opened from, if any (enables "Update Template")
@@ -284,6 +297,7 @@ function buildSessionSnapshot() {
     pageOrder: state.pageOrder,
     insertions: state.insertions,
     redactions: state.redactions,
+    annotations: state.annotations,
     pageNumbering: state.pageNumbering,
     originTemplateId: state.originTemplateId,
   };
@@ -791,6 +805,7 @@ async function applySnapshotToState(record) {
   state.flattenForm = !!record.flattenForm;
   state.watermark = record.watermark || null;
   state.redactions = record.redactions || [];
+  state.annotations = record.annotations || [];
   state.pageNumbering = record.pageNumbering || null;
   state.originTemplateId = record.originTemplateId || null;
   state.insertions = (record.insertions || []).map((ins) => ({
@@ -1025,6 +1040,7 @@ async function loadBytes(bytes, baseName) {
   state.flattenForm = false;
   state.watermark = null;
   state.redactions = [];
+  state.annotations = [];
   state.insertions = [];
   state.pageNumbering = null;
   state.originTemplateId = null;
@@ -1156,6 +1172,24 @@ async function buildPageCard(pageIndex) {
     });
   }
 
+  // Bake staged highlights/notes into the thumbnail too.
+  const annotationsForPage = state.annotations.filter((a) => a.pageIndex === pageIndex);
+  annotationsForPage.forEach((a) => {
+    if (a.type === 'highlight') {
+      ctx.fillStyle = hexToRgbaCss(a.color, 0.4);
+      const x = a.rect.x * thumbScale;
+      const y = (baseViewport.height - a.rect.y - a.rect.height) * thumbScale;
+      ctx.fillRect(x, y, a.rect.width * thumbScale, a.rect.height * thumbScale);
+    } else if (a.type === 'note') {
+      const x = a.point.x * thumbScale;
+      const y = (baseViewport.height - a.point.y) * thumbScale;
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = a.color;
+      ctx.fill();
+    }
+  });
+
   const card = document.createElement('div');
   card.className = 'thumb-card';
   card.dataset.pageIndex = String(pageIndex);
@@ -1210,6 +1244,10 @@ async function buildPageCard(pageIndex) {
     }
     if (state.activeTool === 'redact') {
       openPageDesigner(pageIndex, 'redact');
+      return;
+    }
+    if (state.activeTool === 'annotate') {
+      openPageDesigner(pageIndex, els.annotateModeNote.checked ? 'note' : 'highlight');
       return;
     }
     if (state.stagedDeleted.has(pageIndex)) state.stagedDeleted.delete(pageIndex);
@@ -1277,7 +1315,12 @@ async function buildInsertionCard(ins) {
 
 function wireDragEvents(card, pageIndex) {
   card.addEventListener('dragstart', (e) => {
-    if (state.activeTool === 'add-field' || state.activeTool === 'redact' || e.target.closest('.select-check')) {
+    if (
+      state.activeTool === 'add-field' ||
+      state.activeTool === 'redact' ||
+      state.activeTool === 'annotate' ||
+      e.target.closest('.select-check')
+    ) {
       e.preventDefault();
       return;
     }
@@ -1390,6 +1433,7 @@ function setActiveTool(tool) {
   els.addFieldSection.style.display = state.activeTool === 'add-field' ? 'block' : 'none';
   els.watermarkSection.style.display = state.activeTool === 'watermark' ? 'block' : 'none';
   els.redactSection.style.display = state.activeTool === 'redact' ? 'block' : 'none';
+  els.annotateSection.style.display = state.activeTool === 'annotate' ? 'block' : 'none';
   els.insertPageSection.style.display = state.activeTool === 'insert-page' ? 'block' : 'none';
   els.pageNumberSection.style.display = state.activeTool === 'page-numbers' ? 'block' : 'none';
   if (state.activeTool === 'fill-form') {
@@ -2067,6 +2111,11 @@ function updateApplyHint() {
       ? `${state.redactions.length} redaction box(es) staged. Click a page to add more, then press Apply.`
       : 'Click a page thumbnail below to open the redaction designer.';
     canApply = true;
+  } else if (tool === 'annotate') {
+    hint = state.annotations.length
+      ? `${state.annotations.length} annotation(s) staged. Click a page to add more, then press Apply.`
+      : 'Click a page thumbnail below to open the annotation designer.';
+    canApply = true;
   } else if (tool === 'insert-page') {
     hint = `${state.insertions.length} inserted page(s) so far. Configure above and press Insert to add one.`;
     canApply = true;
@@ -2152,6 +2201,9 @@ async function applyCurrentTool() {
     } else if (tool === 'redact') {
       await persistSession();
       setStatus(`Saved ${state.redactions.length} redaction box(es).`);
+    } else if (tool === 'annotate') {
+      await persistSession();
+      setStatus(`Saved ${state.annotations.length} annotation(s).`);
     } else if (tool === 'insert-page') {
       await persistSession();
       setStatus(`${state.insertions.length} inserted page(s) confirmed.`);
@@ -2381,6 +2433,41 @@ async function buildEditedDocument() {
     pages = pdfDoc.getPages(); // redacted pages were replaced; refresh references
   }
 
+  if (state.annotations.length) {
+    try {
+      const font = await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
+      for (const ann of state.annotations) {
+        const page = pages[ann.pageIndex];
+        if (!page) continue;
+        const color = hexToRgb01(ann.color);
+        if (ann.type === 'highlight') {
+          page.drawRectangle({
+            x: ann.rect.x,
+            y: ann.rect.y,
+            width: ann.rect.width,
+            height: ann.rect.height,
+            color,
+            opacity: 0.35,
+          });
+        } else if (ann.type === 'note') {
+          const radius = 7;
+          page.drawCircle({ x: ann.point.x, y: ann.point.y, size: radius, color, opacity: 0.9 });
+          page.drawText(ann.text || '', {
+            x: ann.point.x + radius + 6,
+            y: ann.point.y - 4,
+            size: 9,
+            font,
+            color: PDFLib.rgb(0, 0, 0),
+            maxWidth: 220,
+            lineHeight: 11,
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Failed to draw annotations', err);
+    }
+  }
+
   if (state.watermark && state.watermark.text && state.watermark.pageIndices.length) {
     try {
       const font = await pdfDoc.embedFont(PDFLib.StandardFonts.HelveticaBold);
@@ -2592,6 +2679,7 @@ async function resetEverything() {
   state.flattenForm = false;
   state.watermark = null;
   state.redactions = [];
+  state.annotations = [];
   state.insertions = [];
   state.pageNumbering = null;
   state.originTemplateId = null;
@@ -2608,6 +2696,7 @@ async function resetEverything() {
   els.addFieldSection.style.display = 'none';
   els.watermarkSection.style.display = 'none';
   els.redactSection.style.display = 'none';
+  els.annotateSection.style.display = 'none';
   els.insertPageSection.style.display = 'none';
   els.pageNumberSection.style.display = 'none';
   els.flattenRow.style.display = 'none';
@@ -2627,20 +2716,27 @@ async function resetEverything() {
 
 // --- Page designer (Add Field / Redact tools share this overlay) -----------
 
-let designerMode = 'field'; // 'field' | 'redact'
+let designerMode = 'field'; // 'field' | 'redact' | 'highlight' | 'note'
 let designerState = null;   // { pageIndex, scale, pdfWidth, pdfHeight }
 let dragRect = null;        // { x1, y1, x2, y2 } in canvas CSS pixels, while dragging
 let pendingScreenRect = null;
+let pendingNotePoint = null; // { x, y } in PDF points, while the note text form is open
+
+const DESIGNER_HINTS = {
+  redact: "Drag on the page to black out a region. Click a box's × to remove it.",
+  highlight: "Drag on the page to highlight a region. Click a box's × to remove it.",
+  note: "Click on the page to place a note. Click a marker's × to remove it.",
+  field: "Drag on the page to draw a new field. Amber boxes are existing fields; blue boxes are new ones you've staged.",
+};
 
 async function openPageDesigner(pageIndex, mode) {
   designerMode = mode;
   designerState = null;
   els.designerPageLabel.textContent = `Page ${pageIndex + 1}`;
   els.designerForm.style.display = 'none';
+  els.designerNoteForm.style.display = 'none';
   els.designerBoxes.innerHTML = '';
-  els.designerHint.textContent = mode === 'redact'
-    ? "Drag on the page to black out a region. Click a box's × to remove it."
-    : "Drag on the page to draw a new field. Amber boxes are existing fields; blue boxes are new ones you've staged.";
+  els.designerHint.textContent = DESIGNER_HINTS[mode] || DESIGNER_HINTS.field;
   els.fieldDesignerOverlay.style.display = 'flex';
 
   const page = await state.pdfjsDoc.getPage(pageIndex + 1);
@@ -2677,7 +2773,72 @@ function renderDesignerBoxes() {
     state.redactions
       .filter((r) => r.pageIndex === pageIndex)
       .forEach((r) => els.designerBoxes.appendChild(makeRedactBox(r.rect, scale, pdfHeight, r.id)));
+  } else if (designerMode === 'highlight') {
+    state.annotations
+      .filter((a) => a.pageIndex === pageIndex && a.type === 'highlight')
+      .forEach((a) => els.designerBoxes.appendChild(makeHighlightBox(a.rect, scale, pdfHeight, a.color, a.id)));
+  } else if (designerMode === 'note') {
+    state.annotations
+      .filter((a) => a.pageIndex === pageIndex && a.type === 'note')
+      .forEach((a) => els.designerBoxes.appendChild(makeNoteMarker(a, scale, pdfHeight)));
   }
+}
+
+function hexToRgbaCss(hex, alpha) {
+  const clean = (hex || '#ffeb3b').replace('#', '');
+  const r = parseInt(clean.slice(0, 2), 16) || 0;
+  const g = parseInt(clean.slice(2, 4), 16) || 0;
+  const b = parseInt(clean.slice(4, 6), 16) || 0;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function makeHighlightBox(rect, scale, pdfHeight, color, id) {
+  const box = document.createElement('div');
+  box.className = 'designer-box highlight';
+  box.style.left = `${rect.x * scale}px`;
+  box.style.top = `${(pdfHeight - rect.y - rect.height) * scale}px`;
+  box.style.width = `${rect.width * scale}px`;
+  box.style.height = `${rect.height * scale}px`;
+  box.style.background = hexToRgbaCss(color, 0.35);
+  box.style.borderColor = color;
+
+  const rm = document.createElement('button');
+  rm.className = 'designer-box-remove';
+  rm.textContent = '×';
+  rm.title = 'Remove this highlight';
+  rm.addEventListener('click', (e) => {
+    e.stopPropagation();
+    state.annotations = state.annotations.filter((a) => a.id !== id);
+    renderDesignerBoxes();
+    persistSession();
+  });
+  box.appendChild(rm);
+  return box;
+}
+
+function makeNoteMarker(ann, scale, pdfHeight) {
+  const size = 16;
+  const marker = document.createElement('div');
+  marker.className = 'note-marker';
+  marker.style.left = `${ann.point.x * scale - size / 2}px`;
+  marker.style.top = `${(pdfHeight - ann.point.y) * scale - size / 2}px`;
+  marker.style.width = `${size}px`;
+  marker.style.height = `${size}px`;
+  marker.style.background = ann.color;
+  marker.title = ann.text;
+
+  const rm = document.createElement('button');
+  rm.className = 'designer-box-remove';
+  rm.textContent = '×';
+  rm.title = 'Remove this note';
+  rm.addEventListener('click', (e) => {
+    e.stopPropagation();
+    state.annotations = state.annotations.filter((a) => a.id !== ann.id);
+    renderDesignerBoxes();
+    persistSession();
+  });
+  marker.appendChild(rm);
+  return marker;
 }
 
 function makeDesignerBox(rect, scale, pdfHeight, name, removable, id) {
@@ -2754,7 +2915,7 @@ function removeDragPreview() {
 }
 
 els.designerCanvasWrap.addEventListener('pointerdown', (e) => {
-  if (!designerState || e.target.closest('.designer-box')) return;
+  if (!designerState || e.target.closest('.designer-box') || e.target.closest('.note-marker')) return;
   const bounds = els.designerCanvas.getBoundingClientRect();
   const x = e.clientX - bounds.left;
   const y = e.clientY - bounds.top;
@@ -2775,6 +2936,18 @@ els.designerCanvasWrap.addEventListener('pointerup', () => {
   const { x1, y1, x2, y2 } = dragRect;
   dragRect = null;
   removeDragPreview();
+
+  if (designerMode === 'note') {
+    // A click, not a drag — place the note at the pointer-down point.
+    const { scale, pdfHeight } = designerState;
+    pendingNotePoint = { x: x1 / scale, y: pdfHeight - y1 / scale };
+    els.designerNoteText.value = '';
+    els.designerNoteColor.value = '#ffeb3b';
+    els.designerNoteForm.style.display = 'flex';
+    els.designerNoteText.focus();
+    return;
+  }
+
   const left = Math.min(x1, x2);
   const top = Math.min(y1, y2);
   const width = Math.abs(x2 - x1);
@@ -2800,6 +2973,27 @@ els.designerCanvasWrap.addEventListener('pointerup', () => {
     return;
   }
 
+  if (designerMode === 'highlight') {
+    const { scale, pdfHeight } = designerState;
+    const rect = {
+      x: left / scale,
+      y: pdfHeight - (top + height) / scale,
+      width: width / scale,
+      height: height / scale,
+    };
+    state.annotations.push({
+      id: `hl${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
+      pageIndex: designerState.pageIndex,
+      type: 'highlight',
+      rect,
+      color: els.highlightColor.value,
+    });
+    renderDesignerBoxes();
+    persistSession();
+    setStatus('Highlight added.');
+    return;
+  }
+
   pendingScreenRect = { left, top, width, height };
   els.designerFieldName.value = '';
   els.designerFieldType.value = 'text';
@@ -2807,6 +3001,29 @@ els.designerCanvasWrap.addEventListener('pointerup', () => {
   els.designerFieldOptions.value = '';
   els.designerForm.style.display = 'flex';
   els.designerFieldName.focus();
+});
+
+els.designerNoteAdd.addEventListener('click', () => {
+  const text = els.designerNoteText.value.trim();
+  if (!text) {
+    setStatus('Note text is required.', true);
+    return;
+  }
+  state.annotations.push({
+    id: `nt${Date.now()}${Math.random().toString(36).slice(2, 6)}`,
+    pageIndex: designerState.pageIndex,
+    type: 'note',
+    point: pendingNotePoint,
+    color: els.designerNoteColor.value,
+    text,
+  });
+  els.designerNoteForm.style.display = 'none';
+  renderDesignerBoxes();
+  persistSession();
+  setStatus('Note added.');
+});
+els.designerNoteCancel.addEventListener('click', () => {
+  els.designerNoteForm.style.display = 'none';
 });
 
 els.designerFieldType.addEventListener('change', () => {
@@ -2868,9 +3085,9 @@ els.designerCancel.addEventListener('click', () => {
 });
 els.designerClose.addEventListener('click', () => {
   els.fieldDesignerOverlay.style.display = 'none';
-  const wasRedact = designerMode === 'redact';
+  const needsThumbRefresh = designerMode === 'redact' || designerMode === 'highlight' || designerMode === 'note';
   designerState = null;
-  if (wasRedact) renderThumbnails();
+  if (needsThumbRefresh) renderThumbnails();
 });
 
 els.watermarkOpacity.addEventListener('input', () => {
@@ -2891,6 +3108,16 @@ els.watermarkOpacity.addEventListener('input', () => {
   });
 });
 els.btnInsertPage.addEventListener('click', insertPage);
+
+[els.annotateModeHighlight, els.annotateModeNote].forEach((el) => {
+  el.addEventListener('change', () => {
+    const isNote = els.annotateModeNote.checked;
+    els.highlightColorRow.style.display = isNote ? 'none' : 'flex';
+    els.annotateHint.textContent = isNote
+      ? 'Click a page thumbnail below, then click on the page to place a note.'
+      : 'Click a page thumbnail below, then drag to highlight a region.';
+  });
+});
 
 els.flattenCheckbox.addEventListener('change', () => {
   state.flattenForm = els.flattenCheckbox.checked;
