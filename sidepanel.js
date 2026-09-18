@@ -107,6 +107,8 @@ const els = {
   pageNumberColor: document.getElementById('pageNumberColor'),
   pageNumberScopeAll: document.getElementById('pageNumberScopeAll'),
   pageNumberScopeSelected: document.getElementById('pageNumberScopeSelected'),
+  makeSearchableSection: document.getElementById('makeSearchableSection'),
+  searchableEnable: document.getElementById('searchableEnable'),
 };
 const toolButtons = Array.from(document.querySelectorAll('.tool-btn'));
 
@@ -135,6 +137,8 @@ const state = {
   pageNumbering: null,      // null | {template, position, fontSize, color, pageIndices:[...]}
   originTemplateId: null,   // id of the Template this document was opened from, if any (enables "Update Template")
   ocrText: new Map(),       // 0-based original index -> OCR'd text (in-memory only, not persisted, regenerable)
+  ocrWords: new Map(),      // 0-based original index -> [{text, bbox:{x0,y0,x1,y1}}] in OCR_RASTER_SCALE canvas-pixel space
+  searchable: false,        // whether to embed an invisible OCR text layer for scanned pages on export
 };
 
 function setStatus(message, isError = false) {
@@ -302,6 +306,7 @@ function buildSessionSnapshot() {
     annotations: state.annotations,
     pageNumbering: state.pageNumbering,
     originTemplateId: state.originTemplateId,
+    searchable: state.searchable,
   };
 }
 
@@ -810,6 +815,9 @@ async function applySnapshotToState(record) {
   state.annotations = record.annotations || [];
   state.pageNumbering = record.pageNumbering || null;
   state.originTemplateId = record.originTemplateId || null;
+  state.searchable = !!record.searchable;
+  state.ocrText = new Map();
+  state.ocrWords = new Map();
   state.insertions = (record.insertions || []).map((ins) => ({
     ...ins,
     imageBytes: ins.imageBytes
@@ -1047,6 +1055,8 @@ async function loadBytes(bytes, baseName) {
   state.pageNumbering = null;
   state.originTemplateId = null;
   state.ocrText = new Map();
+  state.ocrWords = new Map();
+  state.searchable = false;
 
   if (state.pdfjsDoc) {
     state.pdfjsDoc.destroy();
@@ -1439,6 +1449,8 @@ function setActiveTool(tool) {
   els.annotateSection.style.display = state.activeTool === 'annotate' ? 'block' : 'none';
   els.insertPageSection.style.display = state.activeTool === 'insert-page' ? 'block' : 'none';
   els.pageNumberSection.style.display = state.activeTool === 'page-numbers' ? 'block' : 'none';
+  els.makeSearchableSection.style.display = state.activeTool === 'make-searchable' ? 'block' : 'none';
+  if (state.activeTool === 'make-searchable') els.searchableEnable.checked = state.searchable;
   if (state.activeTool === 'fill-form') {
     renderFormFieldsPanel();
     populateAutofillSourceOptions();
@@ -2138,6 +2150,11 @@ function updateApplyHint() {
     const active = activePageCount();
     hint = `Ready to split ${active} active page(s) into separate PDFs.`;
     canApply = active > 0;
+  } else if (tool === 'make-searchable') {
+    hint = els.searchableEnable.checked
+      ? 'Ready to enable Make Searchable — scanned pages get an invisible OCR text layer on export.'
+      : (state.searchable ? 'Press Apply to disable Make Searchable.' : 'Check the box above, then press Apply to enable Make Searchable.');
+    canApply = true;
   } else if (tool === 'export') {
     const active = activePageCount();
     hint = `Ready to export a PDF with ${active} active page(s).`;
@@ -2230,6 +2247,12 @@ async function applyCurrentTool() {
         await persistSession();
         setStatus(`Page numbers staged on ${pageIndices.length} page(s).`);
       }
+    } else if (tool === 'make-searchable') {
+      state.searchable = els.searchableEnable.checked;
+      await persistSession();
+      setStatus(state.searchable
+        ? 'Make Searchable enabled — scanned pages will get an invisible OCR text layer on export.'
+        : 'Make Searchable disabled.');
     } else if (tool === 'split') {
       await splitDocument();
     } else if (tool === 'export') {
@@ -2434,6 +2457,50 @@ async function buildEditedDocument() {
   if (state.redactions.length) {
     await applyRedactionsToDoc(pdfDoc, pages);
     pages = pdfDoc.getPages(); // redacted pages were replaced; refresh references
+  }
+
+  if (state.searchable) {
+    try {
+      const font = await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
+      // Never OCR (and thus never re-embed as "searchable" text) a page that
+      // has a redaction on it — the whole point of Redact is that the
+      // covered content is gone; silently reading it back off the original
+      // page image and stamping it in as invisible text would defeat that.
+      const redactedPageIndices = new Set(state.redactions.map((r) => r.pageIndex));
+      for (let idx = 0; idx < pages.length; idx++) {
+        if (state.deletedPages.has(idx) || redactedPageIndices.has(idx)) continue;
+        const page = pages[idx];
+        if (!page) continue;
+        let words;
+        try {
+          words = await ensurePageOcrWords(idx);
+        } catch (err) {
+          console.error(`OCR failed for page ${idx + 1}`, err);
+          continue;
+        }
+        if (!words || !words.length) continue;
+        const pdfHeight = page.getHeight();
+        for (const w of words) {
+          const { x0, y1 } = w.bbox;
+          const height = Math.max(4, (w.bbox.y1 - w.bbox.y0) / OCR_RASTER_SCALE);
+          try {
+            page.drawText(w.text, {
+              x: x0 / OCR_RASTER_SCALE,
+              y: pdfHeight - y1 / OCR_RASTER_SCALE,
+              size: height * 0.85,
+              font,
+              renderMode: PDFLib.TextRenderingMode.Invisible,
+            });
+          } catch (err) {
+            // Skip words with glyphs Helvetica/WinAnsi can't encode — an
+            // invisible layer with a few dropped words is fine; failing the
+            // whole export over one OCR misread isn't.
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to embed OCR text layer', err);
+    }
   }
 
   if (state.annotations.length) {
@@ -2687,6 +2754,8 @@ async function resetEverything() {
   state.pageNumbering = null;
   state.originTemplateId = null;
   state.ocrText = new Map();
+  state.ocrWords = new Map();
+  state.searchable = false;
 
   await clearSession();
 
@@ -2703,6 +2772,7 @@ async function resetEverything() {
   els.annotateSection.style.display = 'none';
   els.insertPageSection.style.display = 'none';
   els.pageNumberSection.style.display = 'none';
+  els.makeSearchableSection.style.display = 'none';
   els.flattenRow.style.display = 'none';
   els.fieldDesignerOverlay.style.display = 'none';
   els.saveTemplateRow.style.display = 'none';
@@ -3129,12 +3199,17 @@ els.flattenCheckbox.addEventListener('change', () => {
   persistSession();
 });
 
+els.searchableEnable.addEventListener('change', updateApplyHint);
+
 // --- OCR (Tesseract.js, vendored locally under lib/tesseract/, zero network) -
 // Loaded lazily — only when a scanned/image PDF actually needs it — so the
 // ~6MB of OCR assets never cost anything on a normal panel open. The worker
 // and its trained-data are reused across pages and documents; only the
-// per-page recognized text is cached, and only in memory (state.ocrText),
-// since it's cheap to regenerate and doesn't belong in session persistence.
+// per-page recognized text/words are cached, and only in memory
+// (state.ocrText / state.ocrWords), since they're cheap to regenerate and
+// don't belong in session persistence.
+
+const OCR_RASTER_SCALE = 2; // canvas-pixels-per-PDF-point used for both recognition and word-box placement
 
 let tesseractLoadPromise = null;
 function loadTesseractLib() {
@@ -3174,19 +3249,53 @@ function getOcrWorker() {
   return ocrWorkerPromise;
 }
 
+function flattenOcrWords(blocks) {
+  const words = [];
+  for (const block of blocks || []) {
+    for (const para of block.paragraphs || []) {
+      for (const line of para.lines || []) {
+        for (const w of line.words || []) {
+          if (w.text && w.text.trim()) words.push({ text: w.text, bbox: w.bbox });
+        }
+      }
+    }
+  }
+  return words;
+}
+
+// Recognizes a page's rendered image, caching both the plain text (used by
+// Summarize) and per-word bounding boxes (used by Make Searchable) from the
+// same recognition pass — asking for both up front avoids OCR'ing a page
+// twice just because one caller only needed the text.
 async function ocrPage(pageIndex) {
-  if (state.ocrText.has(pageIndex)) return state.ocrText.get(pageIndex);
+  if (state.ocrText.has(pageIndex)) {
+    return { text: state.ocrText.get(pageIndex), words: state.ocrWords.get(pageIndex) || [] };
+  }
   const worker = await getOcrWorker();
   const page = await state.pdfjsDoc.getPage(pageIndex + 1);
-  const viewport = page.getViewport({ scale: 2 });
+  const viewport = page.getViewport({ scale: OCR_RASTER_SCALE });
   const canvas = document.createElement('canvas');
   canvas.width = viewport.width;
   canvas.height = viewport.height;
   const ctx = canvas.getContext('2d');
   await page.render({ canvasContext: ctx, viewport }).promise;
-  const { data } = await worker.recognize(canvas);
+  const { data } = await worker.recognize(canvas, {}, { blocks: true, text: true });
+  const words = flattenOcrWords(data.blocks);
   state.ocrText.set(pageIndex, data.text);
-  return data.text;
+  state.ocrWords.set(pageIndex, words);
+  return { text: data.text, words };
+}
+
+// Returns this page's OCR word boxes for Make Searchable, running OCR only
+// if the page's native pdf.js text layer is actually empty — a page that
+// already has real text needs nothing added.
+async function ensurePageOcrWords(pageIndex) {
+  const page = await state.pdfjsDoc.getPage(pageIndex + 1);
+  const content = await page.getTextContent();
+  const nativeText = content.items.map((it) => it.str).join(' ');
+  if (nativeText.trim()) return null;
+  const { words } = await ocrPage(pageIndex);
+  return words;
 }
 
 async function runOcrOnActivePages(onProgress) {

@@ -19,6 +19,7 @@ Brog's PDF Editor — a 100% client-side Chrome side-panel extension for editing
 - **Page Numbers** — stamp a template like "Page {page} of {pages}" in any corner/center, position-aware across reordering and insertions
 - **Summarize with Chrome AI** — uses Chrome's built-in on-device Summarizer API (Chrome 138+) to summarize the extracted text, entirely locally. Optional focus note (e.g. "payment terms and deadlines") and a short/medium/long length control; output streams in progressively instead of appearing all at once
 - **OCR for scanned PDFs** — if a document (or a page within it) has no extractable text layer, Summarize offers a "Run OCR" button that recognizes the text on-device using a fully bundled copy of Tesseract.js (English) — no download, nothing leaves the browser. Recognized text is cached in memory per page and reused for the rest of the session
+- **Make Searchable** — embeds the OCR'd text as an invisible, selectable/searchable layer over each scanned page on export, so the exported PDF looks identical but its text can be selected, copied, and found with Ctrl+F. Pages that already have real text are left alone, and so is any page with a Redact box on it (never re-embedding content a redaction was meant to remove)
 - **Recent Files** — the last 8 documents you had open are saved automatically and can be reopened from the panel
 - Session persistence via IndexedDB, so edits survive closing the side panel
 
@@ -27,5 +28,6 @@ Brog's PDF Editor — a 100% client-side Chrome side-panel extension for editing
 - Reordering, inserting, or splitting a document with an *unflattened* form can break the live form fields in the output (a pdf-lib limitation when rebuilding page order) — flatten first if you need both.
 - Redacting a page replaces its entire content with a flattened image, so any form fields or annotations on that page are removed along with it.
 - Downloads under 100MB use a `data:` URL, which survives the side panel being closed mid-download. Above that, downloads use a `blob:` URL instead (to avoid the base64 string getting large enough to risk memory/size limits before the download even starts) — keep the panel open until the download starts for those.
-- OCR is English-only and only feeds Summarize on the currently-open document — it doesn't change what's embedded in an exported PDF (a scanned document still exports without a real, selectable text layer), and it isn't yet used when a scanned PDF is picked as a cross-document Autofill source.
+- OCR is English-only and only feeds Summarize and Make Searchable on the currently-open document — it isn't yet used when a scanned PDF is picked as a cross-document Autofill source.
+- Make Searchable's invisible text is positioned per word from OCR's bounding boxes but isn't horizontally scaled to match each word's exact pixel width, so selection highlighting can drift slightly on long words — the recognized text itself, and search/copy results, are unaffected. It also doesn't touch pages that already have a real text layer or pages with a Redact box, and it adds OCR time to export for documents with a lot of scanned pages.
 

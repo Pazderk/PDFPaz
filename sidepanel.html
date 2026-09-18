@@ -629,6 +629,7 @@
       <button class="btn tool-btn" id="toolAnnotate" data-tool="annotate">Annotate</button>
       <button class="btn tool-btn" id="toolInsertPage" data-tool="insert-page">Insert Page</button>
       <button class="btn tool-btn" id="toolPageNumbers" data-tool="page-numbers">Page Numbers</button>
+      <button class="btn tool-btn" id="toolMakeSearchable" data-tool="make-searchable">Make Searchable</button>
       <button class="btn tool-btn" id="toolSplit" data-tool="split">Split into Pages</button>
       <button class="btn tool-btn" id="toolExport" data-tool="export">Export PDF</button>
     </div>
@@ -741,6 +742,12 @@
       <label><input type="radio" name="pageNumberScope" value="selected" id="pageNumberScopeSelected" /> Selected pages</label>
     </div>
     <div class="hint-text">Use {page} and {pages} in the template. Leave the template empty and press Apply to remove page numbers.</div>
+  </section>
+
+  <section class="panel-block" id="makeSearchableSection">
+    <div class="block-label">Make Searchable</div>
+    <label><input type="checkbox" id="searchableEnable" /> Embed OCR'd text on scanned/image pages</label>
+    <div class="hint-text">Runs on-device OCR (English) on any page with no existing text layer and embeds the recognized words as invisible, selectable/searchable text over the original page image &mdash; nothing is redrawn or changed visually. Pages that already have real text, and any page with a Redact box, are left alone. This can take a while for large documents and only takes effect on export.</div>
   </section>
 
   <div id="flattenRow">
