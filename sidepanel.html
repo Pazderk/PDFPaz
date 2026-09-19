@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Brog's PDF Editor</title>
+<title>PrivatePDF</title>
 <style>
   :root {
     --bg: #1e1f22;
@@ -129,7 +129,7 @@
     flex-wrap: wrap;
   }
 
-  #keepInput {
+  #keepInput, .text-input {
     width: 100%;
     background: var(--panel-2);
     color: var(--text);
@@ -139,7 +139,7 @@
     font-size: 12.5px;
     font-family: inherit;
   }
-  #keepInput:focus { border-color: var(--accent); outline: none; }
+  #keepInput:focus, .text-input:focus { border-color: var(--accent); outline: none; }
   #keepHint {
     margin-top: 4px;
     font-size: 10.5px;
@@ -278,11 +278,288 @@
     text-align: center;
     border-top: 1px solid var(--border);
   }
+
+  .hint-text { color: var(--text-dim); font-size: 11.5px; padding: 4px 0; }
+
+  .field-page-header {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--text-dim);
+    margin: 10px 0 4px;
+  }
+  .field-page-header:first-child { margin-top: 0; }
+
+  .field-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0;
+  }
+  .field-row label {
+    flex: 0 0 40%;
+    font-size: 11.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .field-row input[type=text],
+  .field-row select {
+    flex: 1;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 7px;
+    font-size: 11.5px;
+    font-family: inherit;
+    min-width: 0;
+  }
+  .field-row input[type=checkbox] { width: 15px; height: 15px; flex: 0 0 auto; }
+
+  #flattenRow {
+    display: none;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px 0;
+    font-size: 11.5px;
+    color: var(--text-dim);
+  }
+  #flattenRow input { width: 14px; height: 14px; }
+
+  .field-badge {
+    position: absolute;
+    bottom: 4px;
+    right: 4px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 600;
+    padding: 1px 4px;
+    border-radius: 8px;
+    display: none;
+  }
+
+  .wm-badge {
+    position: absolute;
+    bottom: 4px;
+    left: 4px;
+    background: var(--amber);
+    color: #1e1f22;
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 4px;
+    border-radius: 8px;
+    display: none;
+  }
+
+  .wm-row {
+    margin-top: 8px;
+  }
+  .wm-row label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11.5px;
+    color: var(--text-dim);
+  }
+  .wm-row input[type=number] {
+    width: 50px;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 6px;
+    font-size: 11.5px;
+    font-family: inherit;
+  }
+  .wm-row input[type=color] {
+    width: 28px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--panel-2);
+    cursor: pointer;
+  }
+  .wm-opacity input[type=range] { width: 100px; }
+
+  .designer-overlay {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+    z-index: 20;
+    display: none;
+    flex-direction: column;
+  }
+  .designer-modal { display: flex; flex-direction: column; height: 100%; overflow-y: auto; }
+  .designer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .designer-hint {
+    padding: 6px 14px 0;
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .designer-canvas-wrap {
+    position: relative;
+    margin: 10px 14px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    max-height: 45vh;
+    touch-action: none;
+  }
+  #designerCanvas { display: block; background: #fff; }
+  #designerBoxes { position: absolute; top: 0; left: 0; }
+  .designer-box {
+    position: absolute;
+    border: 1.5px solid var(--accent);
+    background: rgba(79,140,255,0.12);
+    box-sizing: border-box;
+  }
+  .designer-box.existing { border-color: var(--amber); background: rgba(217,154,43,0.12); }
+  .designer-box-label {
+    position: absolute;
+    top: -16px;
+    left: -1.5px;
+    font-size: 9px;
+    background: var(--panel);
+    padding: 0 3px;
+    border-radius: 2px;
+    white-space: nowrap;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .designer-box-remove {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: none;
+    background: var(--danger);
+    color: #fff;
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+  }
+  .designer-drag-preview {
+    position: absolute;
+    border: 1.5px dashed var(--accent);
+    background: rgba(79,140,255,0.15);
+    pointer-events: none;
+  }
+  .designer-form {
+    display: none;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0 14px 10px;
+    padding: 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .designer-form input, .designer-form select {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 12px;
+    font-family: inherit;
+  }
+
+  #summarizeRow { display: none; padding: 0 14px 10px; }
+  #summarySection {
+    display: none;
+    padding: 0 14px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  #summaryOutput {
+    white-space: pre-wrap;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    margin-top: 4px;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+  #summaryStatus { font-size: 11px; color: var(--text-dim); }
+
+  #mergeRow { padding: 0 14px 12px; }
+  #recentSection { display: none; padding: 0 0 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+  #templatesSection { display: none; padding: 0 0 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+  #saveTemplateRow { display: none; align-items: center; gap: 6px; flex-wrap: wrap; padding: 0 14px 10px; }
+  #saveTemplateForm { flex: 1; min-width: 220px; }
+  #recentList { padding: 0 14px; display: flex; flex-direction: column; gap: 6px; }
+  .recent-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+  }
+  .recent-info { flex: 1; min-width: 0; }
+  .recent-name {
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .recent-meta { font-size: 10.5px; color: var(--text-dim); }
+  .recent-row .btn { padding: 4px 8px; font-size: 11px; flex: 0 0 auto; }
+
+  .thumb-card[draggable="true"] { cursor: grab; }
+  .thumb-card.dragging { opacity: .35; }
+  .thumb-card.drag-over { border-color: var(--accent); border-style: dashed; }
+  .thumb-card.insertion { border-style: dashed; border-color: var(--text-dim); cursor: default; }
+  .thumb-card.insertion canvas { border: 1px solid var(--border); }
+
+  .designer-box.redact { background: rgba(0,0,0,0.8); border-color: #000; }
+  .designer-box.highlight { border-width: 1.5px; border-style: solid; }
+
+  .note-marker {
+    position: absolute;
+    border-radius: 50%;
+    border: 1.5px solid rgba(0,0,0,0.45);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.5);
+    cursor: default;
+  }
+
+  .profile-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    padding: 10px 14px;
+  }
+  .profile-field { display: flex; flex-direction: column; gap: 3px; }
+  .profile-field label { font-size: 10.5px; color: var(--text-dim); }
+  .profile-notes-wrap { padding: 0 14px 6px; display: flex; flex-direction: column; }
+  #profileNotes { resize: vertical; }
+
+  #autofillRow { padding: 0 0 10px; }
+  #autofillRow .hint-text { padding: 4px 0 0; }
+  #btnAutofillAI.pending { position: relative; }
+  .autofilled { box-shadow: 0 0 0 1.5px var(--accent) inset; border-radius: 4px; }
 </style>
 </head>
 <body>
   <header>
-    <h1>Brog's PDF Editor</h1>
+    <h1>PrivatePDF</h1>
     <p>Local PDF editor &mdash; everything stays on this device.</p>
   </header>
 
@@ -291,7 +568,53 @@
     <input type="file" id="fileInput" accept="application/pdf,.pdf" />
   </div>
 
+  <div id="mergeRow">
+    <button class="btn" id="btnMerge">Merge PDFs&hellip;</button>
+    <input type="file" id="mergeFileInput" accept="application/pdf,.pdf" multiple style="display:none;" />
+    <button class="btn" id="btnEditProfile">Autofill Profile&hellip;</button>
+  </div>
+
+  <div id="templatesSection">
+    <div class="block-label" style="padding: 0 14px;">Templates</div>
+    <div id="templatesList"></div>
+  </div>
+
+  <div id="recentSection">
+    <div class="block-label" style="padding: 0 14px;">Recent Files</div>
+    <div id="recentList"></div>
+  </div>
+
   <div id="docInfo"></div>
+
+  <div id="saveTemplateRow">
+    <button class="btn" id="btnSaveTemplate">Save as Template&hellip;</button>
+    <button class="btn" id="btnUpdateTemplate" style="display:none;">Update Template</button>
+    <div id="saveTemplateForm" class="row" style="display:none;">
+      <input type="text" id="saveTemplateName" class="text-input" placeholder="Template name" style="flex:1;" />
+      <button class="btn primary" id="saveTemplateConfirm">Save</button>
+      <button class="btn" id="saveTemplateCancel">Cancel</button>
+    </div>
+  </div>
+
+  <div id="summarizeRow">
+    <input type="text" id="summaryFocus" class="text-input" placeholder="Optional: focus on&hellip; (e.g. payment terms, action items)" />
+    <div class="row wm-row" style="margin-top:6px;">
+      <label>Length
+        <select id="summaryLength">
+          <option value="short">Short</option>
+          <option value="medium" selected>Medium</option>
+          <option value="long">Long</option>
+        </select>
+      </label>
+      <button class="btn" id="btnSummarize">Summarize with Chrome AI</button>
+    </div>
+  </div>
+  <div id="summarySection">
+    <div class="block-label">Summary</div>
+    <div id="summaryStatus"></div>
+    <button class="btn" id="btnRunOcr" style="display:none;">Run OCR (scanned/image PDF)</button>
+    <div id="summaryOutput"></div>
+  </div>
 
   <section class="panel-block" id="toolSection">
     <div class="block-label">Choose an action, then Apply</div>
@@ -299,6 +622,17 @@
       <button class="btn tool-btn" id="toolRemove" data-tool="remove">Remove Pages</button>
       <button class="btn tool-btn" id="toolRotateSelected" data-tool="rotate-selected">Rotate Selected</button>
       <button class="btn tool-btn" id="toolRotateAll" data-tool="rotate-all">Rotate All</button>
+      <button class="btn tool-btn" id="toolFillForm" data-tool="fill-form">Fill Form</button>
+      <button class="btn tool-btn" id="toolAddField" data-tool="add-field">Add Field</button>
+      <button class="btn tool-btn" id="toolWatermark" data-tool="watermark">Watermark</button>
+      <button class="btn tool-btn" id="toolRedact" data-tool="redact">Redact</button>
+      <button class="btn tool-btn" id="toolAnnotate" data-tool="annotate">Annotate</button>
+      <button class="btn tool-btn" id="toolInsertPage" data-tool="insert-page">Insert Page</button>
+      <button class="btn tool-btn" id="toolPageNumbers" data-tool="page-numbers">Page Numbers</button>
+      <button class="btn tool-btn" id="toolMakeSearchable" data-tool="make-searchable">Make Searchable</button>
+      <button class="btn tool-btn" id="toolMetadata" data-tool="metadata">Metadata</button>
+      <button class="btn tool-btn" id="toolExtractImages" data-tool="extract-images">Extract Images</button>
+      <button class="btn tool-btn" id="toolCompressImages" data-tool="compress-images">Compress Images</button>
       <button class="btn tool-btn" id="toolSplit" data-tool="split">Split into Pages</button>
       <button class="btn tool-btn" id="toolExport" data-tool="export">Export PDF</button>
     </div>
@@ -315,8 +649,139 @@
   <section class="panel-block" id="keepSection">
     <div class="block-label">Pages to keep</div>
     <input type="text" id="keepInput" placeholder="e.g. 1-3,5,8-10" />
-    <div id="keepHint">Type a range, or click thumbnails below &mdash; both stay in sync. Nothing is removed until you press Apply.</div>
+    <div id="keepHint">Type a range (by original page number), or click thumbnails below &mdash; both stay in sync. Nothing is removed until you press Apply. Drag a thumbnail to reorder pages &mdash; that happens immediately.</div>
   </section>
+
+  <section class="panel-block" id="formFieldsSection">
+    <div class="block-label">Fill Form</div>
+    <div id="autofillRow">
+      <label class="hint-text" for="autofillSource" style="padding:0 0 3px;display:block;">Fill from (optional, combined with your Profile)</label>
+      <select id="autofillSource" class="text-input"></select>
+      <input type="file" id="autofillSourceFile" accept="application/pdf,.pdf" style="display:none;" />
+      <button class="btn" id="btnAutofillAI" style="margin-top:6px;">Autofill with AI &#10024;</button>
+      <div class="hint-text">Uses Chrome's on-device AI, your saved Autofill Profile, and any chosen source document to guess values &mdash; always review before pressing Apply.</div>
+    </div>
+    <div id="formFieldsList"></div>
+  </section>
+
+  <section class="panel-block" id="addFieldSection">
+    <div class="block-label">Add Field</div>
+    <div class="hint-text">Click a page thumbnail below to open the field designer, then drag on the page to draw a new field.</div>
+  </section>
+
+  <section class="panel-block" id="watermarkSection">
+    <div class="block-label">Watermark</div>
+    <input type="text" id="watermarkText" class="text-input" placeholder="e.g. CONFIDENTIAL, DRAFT" />
+    <div class="row wm-row">
+      <label>Size <input type="number" id="watermarkSize" value="40" min="8" max="120" /></label>
+      <label>Rotation <input type="number" id="watermarkRotation" value="-45" min="-90" max="90" />&deg;</label>
+      <label>Color <input type="color" id="watermarkColor" value="#808080" /></label>
+    </div>
+    <div class="row wm-row">
+      <label class="wm-opacity">Opacity <input type="range" id="watermarkOpacity" min="5" max="100" value="30" /> <span id="watermarkOpacityLabel">30%</span></label>
+    </div>
+    <div class="row wm-row">
+      <label><input type="checkbox" id="watermarkTile" /> Tile across page</label>
+    </div>
+    <div class="row wm-row">
+      <label><input type="radio" name="watermarkScope" value="all" id="watermarkScopeAll" checked /> All pages</label>
+      <label><input type="radio" name="watermarkScope" value="selected" id="watermarkScopeSelected" /> Selected pages</label>
+    </div>
+    <div class="hint-text">Leave the text empty and press Apply to remove the current watermark.</div>
+  </section>
+
+  <section class="panel-block" id="redactSection">
+    <div class="block-label">Redact</div>
+    <div class="hint-text">Click a page thumbnail below, then drag to black out a region. Redacted pages are flattened to an image on export &mdash; the covered content is actually removed, not just hidden, but any form fields or annotations on that page are removed too.</div>
+  </section>
+
+  <section class="panel-block" id="annotateSection">
+    <div class="block-label">Annotate</div>
+    <div class="row wm-row">
+      <label><input type="radio" name="annotateMode" value="highlight" id="annotateModeHighlight" checked /> Highlight</label>
+      <label><input type="radio" name="annotateMode" value="note" id="annotateModeNote" /> Note</label>
+    </div>
+    <div class="row wm-row" id="highlightColorRow">
+      <label>Color <input type="color" id="highlightColor" value="#ffeb3b" /></label>
+    </div>
+    <div class="hint-text" id="annotateHint">Click a page thumbnail below, then drag to highlight a region.</div>
+  </section>
+
+  <section class="panel-block" id="insertPageSection">
+    <div class="block-label">Insert Page</div>
+    <div class="row wm-row">
+      <label><input type="radio" name="insertType" value="blank" id="insertTypeBlank" checked /> Blank page</label>
+      <label><input type="radio" name="insertType" value="image" id="insertTypeImage" /> Image</label>
+    </div>
+    <div class="row wm-row" id="insertImageRow" style="display:none;">
+      <input type="file" id="insertImageFile" accept="image/png,image/jpeg" />
+    </div>
+    <div class="row wm-row">
+      <label>Position <select id="insertPosition"></select></label>
+    </div>
+    <button class="btn primary" id="btnInsertPage" style="margin-top:8px;">Insert</button>
+    <div class="hint-text">Inserted pages appear as dashed cards in the grid below and aren't draggable &mdash; remove and re-insert at a different position if needed.</div>
+  </section>
+
+  <section class="panel-block" id="pageNumberSection">
+    <div class="block-label">Page Numbers</div>
+    <input type="text" id="pageNumberTemplate" class="text-input" placeholder="Page {page} of {pages}" value="Page {page} of {pages}" />
+    <div class="row wm-row">
+      <label>Position
+        <select id="pageNumberPosition">
+          <option value="bottom-center">Bottom Center</option>
+          <option value="bottom-right">Bottom Right</option>
+          <option value="bottom-left">Bottom Left</option>
+          <option value="top-center">Top Center</option>
+          <option value="top-right">Top Right</option>
+          <option value="top-left">Top Left</option>
+        </select>
+      </label>
+      <label>Size <input type="number" id="pageNumberSize" value="11" min="6" max="36" /></label>
+      <label>Color <input type="color" id="pageNumberColor" value="#000000" /></label>
+    </div>
+    <div class="row wm-row">
+      <label><input type="radio" name="pageNumberScope" value="all" id="pageNumberScopeAll" checked /> All pages</label>
+      <label><input type="radio" name="pageNumberScope" value="selected" id="pageNumberScopeSelected" /> Selected pages</label>
+    </div>
+    <div class="hint-text">Use {page} and {pages} in the template. Leave the template empty and press Apply to remove page numbers.</div>
+  </section>
+
+  <section class="panel-block" id="makeSearchableSection">
+    <div class="block-label">Make Searchable</div>
+    <label><input type="checkbox" id="searchableEnable" /> Embed OCR'd text on scanned/image pages</label>
+    <div class="hint-text">Runs on-device OCR (English) on any page with no existing text layer and embeds the recognized words as invisible, selectable/searchable text over the original page image &mdash; nothing is redrawn or changed visually. Pages that already have real text, and any page with a Redact box, are left alone. This can take a while for large documents and only takes effect on export.</div>
+  </section>
+
+  <section class="panel-block" id="metadataSection">
+    <div class="block-label">Metadata</div>
+    <input type="text" id="metadataTitle" class="text-input" placeholder="Title" style="margin-bottom:6px;" />
+    <input type="text" id="metadataAuthor" class="text-input" placeholder="Author" style="margin-bottom:6px;" />
+    <input type="text" id="metadataSubject" class="text-input" placeholder="Subject" style="margin-bottom:6px;" />
+    <input type="text" id="metadataKeywords" class="text-input" placeholder="Keywords (comma-separated)" />
+    <div class="hint-text">Edits the document's Title/Author/Subject/Keywords. Leave a field blank to clear it. Only takes effect on export.</div>
+  </section>
+
+  <section class="panel-block" id="extractImagesSection">
+    <div class="block-label">Extract Images</div>
+    <div class="hint-text" id="extractImagesHint">Downloads every embedded image in this document as a separate file. Some image encodings (JPEG 2000, CCITT fax, indexed color) aren't supported and will be skipped.</div>
+  </section>
+
+  <section class="panel-block" id="compressImagesSection">
+    <div class="block-label">Compress Images</div>
+    <label><input type="checkbox" id="compressEnable" /> Recompress embedded images on export</label>
+    <div class="row wm-row">
+      <label>Quality <input type="range" id="compressQuality" min="10" max="95" value="70" /> <span id="compressQualityLabel">70%</span></label>
+    </div>
+    <div class="row wm-row">
+      <label>Max dimension <input type="number" id="compressMaxDimension" value="1600" min="200" max="6000" step="100" /> px</label>
+    </div>
+    <div class="hint-text">Re-encodes embedded photo images (JPEG and common raw formats) at the chosen quality and pixel cap. Images that wouldn't actually shrink are left alone. Text, vector graphics, and unsupported image encodings (JPEG 2000, CCITT fax, indexed color) are never touched. Only takes effect on export.</div>
+  </section>
+
+  <div id="flattenRow">
+    <label><input type="checkbox" id="flattenCheckbox" /> Flatten form fields on export (bakes values in permanently; recommended before Split, Merge, or if you've reordered/inserted pages)</label>
+  </div>
 
   <div id="applyHint"></div>
 
@@ -331,6 +796,60 @@
   <div id="thumbnailGrid"></div>
 
   <footer>Powered by pdf-lib &amp; PDF.js &mdash; no network requests, ever.</footer>
+
+  <div id="fieldDesignerOverlay" class="designer-overlay">
+    <div class="designer-modal">
+      <div class="designer-header">
+        <span id="designerPageLabel">Page 1</span>
+        <button class="btn" id="designerClose">Close</button>
+      </div>
+      <div class="designer-hint" id="designerHint">Drag on the page to draw a new field. Amber boxes are existing fields; blue boxes are new ones you've staged.</div>
+      <div id="designerCanvasWrap" class="designer-canvas-wrap">
+        <canvas id="designerCanvas"></canvas>
+        <div id="designerBoxes"></div>
+      </div>
+      <div id="designerForm" class="designer-form">
+        <input type="text" id="designerFieldName" placeholder="Field name" />
+        <select id="designerFieldType">
+          <option value="text">Text</option>
+          <option value="checkbox">Checkbox</option>
+          <option value="dropdown">Dropdown</option>
+        </select>
+        <input type="text" id="designerFieldOptions" placeholder="Options, comma-separated" style="display:none;" />
+        <div class="row">
+          <button class="btn primary" id="designerAdd">Add Field</button>
+          <button class="btn" id="designerCancel">Cancel</button>
+        </div>
+      </div>
+      <div id="designerNoteForm" class="designer-form">
+        <textarea id="designerNoteText" class="text-input" rows="3" placeholder="Note text"></textarea>
+        <label class="hint-text">Color <input type="color" id="designerNoteColor" value="#ffeb3b" /></label>
+        <div class="row">
+          <button class="btn primary" id="designerNoteAdd">Add Note</button>
+          <button class="btn" id="designerNoteCancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="profileOverlay" class="designer-overlay">
+    <div class="designer-modal">
+      <div class="designer-header">
+        <span>Autofill Profile</span>
+        <button class="btn" id="profileClose">Close</button>
+      </div>
+      <div class="designer-hint">Used only to build a prompt for Chrome's on-device AI when you click "Autofill with AI" &mdash; stored locally in this browser, never sent anywhere.</div>
+      <div id="profileFormFields" class="profile-fields"></div>
+      <div class="profile-notes-wrap">
+        <label for="profileNotes" class="hint-text" style="padding:0 0 4px;">Anything else (avoid very sensitive numbers like a full SSN)</label>
+        <textarea id="profileNotes" class="text-input" rows="3" placeholder="e.g. veteran status, emergency contact, employer address&hellip;"></textarea>
+      </div>
+      <div class="row" style="padding: 10px 14px 14px;">
+        <button class="btn primary" id="profileSave">Save Profile</button>
+        <button class="btn danger" id="profileClear">Clear Profile</button>
+      </div>
+    </div>
+  </div>
 
   <script src="lib/pdf.min.js"></script>
   <script src="lib/pdf-lib.min.js"></script>
