@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PrivatePDF",
-  "version": "1.10.0",
+  "version": "1.10.1",
   "description": "100% client-side PDF editor docked to the browser's side panel: merge, reorder, insert, redact, annotate, fill or add form fields (with AI autofill from a local profile, another document, or a saved template), watermark, number pages, edit metadata, extract or compress images, split, OCR/make scanned pages searchable, and summarize with Chrome's on-device AI. No files ever leave your browser.",
   "action": {
     "default_icon": {
