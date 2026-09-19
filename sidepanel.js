@@ -6,6 +6,8 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('lib/pdf.worker.js');
 
 const els = {
+  aiStatusBadge: document.getElementById('aiStatusBadge'),
+  aiStatusText: document.getElementById('aiStatusText'),
   dropZone: document.getElementById('dropZone'),
   fileInput: document.getElementById('fileInput'),
   mergeRow: document.getElementById('mergeRow'),
@@ -40,6 +42,7 @@ const els = {
   actionRow: document.getElementById('actionRow'),
   status: document.getElementById('status'),
   emptyState: document.getElementById('emptyState'),
+  gridHint: document.getElementById('gridHint'),
   grid: document.getElementById('thumbnailGrid'),
   rotateAngle: document.getElementById('rotateAngle'),
   btnClearSelection: document.getElementById('btnClearSelection'),
@@ -163,6 +166,45 @@ function setStatus(message, isError = false) {
 function setBusy(busy) {
   document.querySelectorAll('.btn, select, input').forEach((el) => (el.disabled = busy));
   if (!busy) updateApplyHint();
+}
+
+// --- Chrome on-device AI status badge ---------------------------------------
+// Both Summarize and Autofill use Chrome's on-device AI, which needs a
+// one-time model download the first time it's used. This just surfaces that
+// state up front (checked via availability(), which never triggers a
+// download itself) so "why did it say Downloading" isn't a surprise, and so
+// Summarize/Autofill's own status lines can stay focused on what THAT run is
+// doing instead of re-explaining general readiness every time.
+function setAiBadge(cls, text) {
+  els.aiStatusBadge.className = `ai-badge ${cls}`;
+  els.aiStatusText.textContent = text;
+}
+
+async function refreshAiStatusBadge() {
+  const hasSummarizer = typeof Summarizer !== 'undefined';
+  const hasLanguageModel = typeof LanguageModel !== 'undefined';
+  if (!hasSummarizer && !hasLanguageModel) {
+    setAiBadge('ai-badge-unavailable', 'Chrome AI: not supported in this browser (needs Chrome 138+)');
+    return;
+  }
+
+  try {
+    const checks = [];
+    if (hasSummarizer) checks.push(Summarizer.availability());
+    if (hasLanguageModel) checks.push(LanguageModel.availability());
+    const results = await Promise.all(checks);
+
+    if (results.some((r) => r === 'unavailable')) {
+      setAiBadge('ai-badge-unavailable', 'Chrome AI: unavailable on this device');
+    } else if (results.every((r) => r === 'available')) {
+      setAiBadge('ai-badge-ready', 'Chrome AI: ready');
+    } else {
+      setAiBadge('ai-badge-needs-download', 'Chrome AI: needs a one-time on-device download');
+    }
+  } catch (err) {
+    console.error('Failed to check Chrome AI availability', err);
+    setAiBadge('ai-badge-unavailable', 'Chrome AI: status unknown');
+  }
 }
 
 // --- IndexedDB persistence --------------------------------------------------
@@ -1100,7 +1142,8 @@ async function loadBytes(bytes, baseName) {
 function showEditorUI() {
   els.docInfo.style.display = 'block';
   els.toolSection.style.display = 'block';
-  els.keepSection.style.display = 'block';
+  els.gridHint.style.display = 'block';
+  els.keepSection.style.display = state.activeTool === 'remove' ? 'block' : 'none';
   els.actionRow.style.display = 'flex';
   els.summarizeRow.style.display = 'block';
   els.saveTemplateRow.style.display = 'flex';
@@ -1283,6 +1326,7 @@ async function buildPageCard(pageIndex) {
       openPageDesigner(pageIndex, els.annotateModeNote.checked ? 'note' : 'highlight');
       return;
     }
+    if (state.activeTool !== 'remove') return; // a plain click shouldn't stage a page for removal
     if (state.stagedDeleted.has(pageIndex)) state.stagedDeleted.delete(pageIndex);
     else state.stagedDeleted.add(pageIndex);
     refreshAllCardVisuals();
@@ -1462,6 +1506,7 @@ function refreshAllCardVisuals() {
 function setActiveTool(tool) {
   state.activeTool = state.activeTool === tool ? null : tool;
   toolButtons.forEach((btn) => btn.classList.toggle('active', btn.dataset.tool === state.activeTool));
+  els.keepSection.style.display = state.activeTool === 'remove' ? 'block' : 'none';
   els.formFieldsSection.style.display = state.activeTool === 'fill-form' ? 'block' : 'none';
   els.addFieldSection.style.display = state.activeTool === 'add-field' ? 'block' : 'none';
   els.watermarkSection.style.display = state.activeTool === 'watermark' ? 'block' : 'none';
@@ -1868,6 +1913,9 @@ async function autofillWithAI() {
       session = await LanguageModel.create({
         signal: abortController.signal,
         monitor(m) {
+          // See the identical note in summarizeDocument() — skip "Downloading..."
+          // messaging when the model's already available locally.
+          if (availability === 'available') return;
           m.addEventListener('downloadprogress', (e) => {
             setStatus(`Downloading on-device model… ${Math.round(e.loaded * 100)}%`);
           });
@@ -1934,6 +1982,7 @@ async function autofillWithAI() {
       }
     }
     els.btnAutofillAI.disabled = false;
+    refreshAiStatusBadge();
   }
 }
 
@@ -3094,6 +3143,7 @@ async function resetEverything() {
 
   els.grid.innerHTML = '';
   els.emptyState.style.display = 'block';
+  els.gridHint.style.display = 'none';
   els.docInfo.style.display = 'none';
   els.toolSection.style.display = 'none';
   els.keepSection.style.display = 'none';
@@ -3719,6 +3769,11 @@ async function summarizeDocument() {
         sharedContext,
         signal: abortController.signal,
         monitor(m) {
+          // Chrome still fires a courtesy downloadprogress event even when the
+          // model is already cached locally (typically one immediate 100%
+          // event) — only surface "Downloading..." messaging when a real
+          // download was actually expected, per the availability check above.
+          if (availability === 'available') return;
           m.addEventListener('downloadprogress', (e) => {
             els.summaryStatus.textContent = `Downloading on-device model… ${Math.round(e.loaded * 100)}%`;
           });
@@ -3781,6 +3836,7 @@ async function summarizeDocument() {
     }
   } finally {
     els.btnSummarize.disabled = false;
+    refreshAiStatusBadge();
   }
 }
 
@@ -3859,3 +3915,4 @@ els.btnReset.addEventListener('click', resetEverything);
 // --- Startup -----------------------------------------------------------
 
 restoreSession();
+refreshAiStatusBadge();
