@@ -630,6 +630,9 @@
       <button class="btn tool-btn" id="toolInsertPage" data-tool="insert-page">Insert Page</button>
       <button class="btn tool-btn" id="toolPageNumbers" data-tool="page-numbers">Page Numbers</button>
       <button class="btn tool-btn" id="toolMakeSearchable" data-tool="make-searchable">Make Searchable</button>
+      <button class="btn tool-btn" id="toolMetadata" data-tool="metadata">Metadata</button>
+      <button class="btn tool-btn" id="toolExtractImages" data-tool="extract-images">Extract Images</button>
+      <button class="btn tool-btn" id="toolCompressImages" data-tool="compress-images">Compress Images</button>
       <button class="btn tool-btn" id="toolSplit" data-tool="split">Split into Pages</button>
       <button class="btn tool-btn" id="toolExport" data-tool="export">Export PDF</button>
     </div>
@@ -748,6 +751,32 @@
     <div class="block-label">Make Searchable</div>
     <label><input type="checkbox" id="searchableEnable" /> Embed OCR'd text on scanned/image pages</label>
     <div class="hint-text">Runs on-device OCR (English) on any page with no existing text layer and embeds the recognized words as invisible, selectable/searchable text over the original page image &mdash; nothing is redrawn or changed visually. Pages that already have real text, and any page with a Redact box, are left alone. This can take a while for large documents and only takes effect on export.</div>
+  </section>
+
+  <section class="panel-block" id="metadataSection">
+    <div class="block-label">Metadata</div>
+    <input type="text" id="metadataTitle" class="text-input" placeholder="Title" style="margin-bottom:6px;" />
+    <input type="text" id="metadataAuthor" class="text-input" placeholder="Author" style="margin-bottom:6px;" />
+    <input type="text" id="metadataSubject" class="text-input" placeholder="Subject" style="margin-bottom:6px;" />
+    <input type="text" id="metadataKeywords" class="text-input" placeholder="Keywords (comma-separated)" />
+    <div class="hint-text">Edits the document's Title/Author/Subject/Keywords. Leave a field blank to clear it. Only takes effect on export.</div>
+  </section>
+
+  <section class="panel-block" id="extractImagesSection">
+    <div class="block-label">Extract Images</div>
+    <div class="hint-text" id="extractImagesHint">Downloads every embedded image in this document as a separate file. Some image encodings (JPEG 2000, CCITT fax, indexed color) aren't supported and will be skipped.</div>
+  </section>
+
+  <section class="panel-block" id="compressImagesSection">
+    <div class="block-label">Compress Images</div>
+    <label><input type="checkbox" id="compressEnable" /> Recompress embedded images on export</label>
+    <div class="row wm-row">
+      <label>Quality <input type="range" id="compressQuality" min="10" max="95" value="70" /> <span id="compressQualityLabel">70%</span></label>
+    </div>
+    <div class="row wm-row">
+      <label>Max dimension <input type="number" id="compressMaxDimension" value="1600" min="200" max="6000" step="100" /> px</label>
+    </div>
+    <div class="hint-text">Re-encodes embedded photo images (JPEG and common raw formats) at the chosen quality and pixel cap. Images that wouldn't actually shrink are left alone. Text, vector graphics, and unsupported image encodings (JPEG 2000, CCITT fax, indexed color) are never touched. Only takes effect on export.</div>
   </section>
 
   <div id="flattenRow">

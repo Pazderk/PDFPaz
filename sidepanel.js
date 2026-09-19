@@ -109,6 +109,18 @@ const els = {
   pageNumberScopeSelected: document.getElementById('pageNumberScopeSelected'),
   makeSearchableSection: document.getElementById('makeSearchableSection'),
   searchableEnable: document.getElementById('searchableEnable'),
+  metadataSection: document.getElementById('metadataSection'),
+  metadataTitle: document.getElementById('metadataTitle'),
+  metadataAuthor: document.getElementById('metadataAuthor'),
+  metadataSubject: document.getElementById('metadataSubject'),
+  metadataKeywords: document.getElementById('metadataKeywords'),
+  extractImagesSection: document.getElementById('extractImagesSection'),
+  extractImagesHint: document.getElementById('extractImagesHint'),
+  compressImagesSection: document.getElementById('compressImagesSection'),
+  compressEnable: document.getElementById('compressEnable'),
+  compressQuality: document.getElementById('compressQuality'),
+  compressQualityLabel: document.getElementById('compressQualityLabel'),
+  compressMaxDimension: document.getElementById('compressMaxDimension'),
 };
 const toolButtons = Array.from(document.querySelectorAll('.tool-btn'));
 
@@ -139,6 +151,8 @@ const state = {
   ocrText: new Map(),       // 0-based original index -> OCR'd text (in-memory only, not persisted, regenerable)
   ocrWords: new Map(),      // 0-based original index -> [{text, bbox:{x0,y0,x1,y1}}] in OCR_RASTER_SCALE canvas-pixel space
   searchable: false,        // whether to embed an invisible OCR text layer for scanned pages on export
+  metadata: null,           // null | {title, author, subject, keywords} — staged edits, applied on export
+  compressImages: null,     // null | {quality (0-1), maxDimension} — recompress embedded images on export
 };
 
 function setStatus(message, isError = false) {
@@ -307,6 +321,8 @@ function buildSessionSnapshot() {
     pageNumbering: state.pageNumbering,
     originTemplateId: state.originTemplateId,
     searchable: state.searchable,
+    metadata: state.metadata,
+    compressImages: state.compressImages,
   };
 }
 
@@ -816,6 +832,8 @@ async function applySnapshotToState(record) {
   state.pageNumbering = record.pageNumbering || null;
   state.originTemplateId = record.originTemplateId || null;
   state.searchable = !!record.searchable;
+  state.metadata = record.metadata || null;
+  state.compressImages = record.compressImages || null;
   state.ocrText = new Map();
   state.ocrWords = new Map();
   state.insertions = (record.insertions || []).map((ins) => ({
@@ -1057,6 +1075,8 @@ async function loadBytes(bytes, baseName) {
   state.ocrText = new Map();
   state.ocrWords = new Map();
   state.searchable = false;
+  state.metadata = null;
+  state.compressImages = null;
 
   if (state.pdfjsDoc) {
     state.pdfjsDoc.destroy();
@@ -1451,6 +1471,18 @@ function setActiveTool(tool) {
   els.pageNumberSection.style.display = state.activeTool === 'page-numbers' ? 'block' : 'none';
   els.makeSearchableSection.style.display = state.activeTool === 'make-searchable' ? 'block' : 'none';
   if (state.activeTool === 'make-searchable') els.searchableEnable.checked = state.searchable;
+  els.metadataSection.style.display = state.activeTool === 'metadata' ? 'block' : 'none';
+  if (state.activeTool === 'metadata') populateMetadataFields();
+  els.extractImagesSection.style.display = state.activeTool === 'extract-images' ? 'block' : 'none';
+  els.compressImagesSection.style.display = state.activeTool === 'compress-images' ? 'block' : 'none';
+  if (state.activeTool === 'compress-images') {
+    els.compressEnable.checked = !!state.compressImages;
+    if (state.compressImages) {
+      els.compressQuality.value = Math.round(state.compressImages.quality * 100);
+      els.compressMaxDimension.value = state.compressImages.maxDimension;
+    }
+    els.compressQualityLabel.textContent = `${els.compressQuality.value}%`;
+  }
   if (state.activeTool === 'fill-form') {
     renderFormFieldsPanel();
     populateAutofillSourceOptions();
@@ -2186,6 +2218,17 @@ function updateApplyHint() {
       ? 'Ready to enable Make Searchable — scanned pages get an invisible OCR text layer on export.'
       : (state.searchable ? 'Press Apply to disable Make Searchable.' : 'Check the box above, then press Apply to enable Make Searchable.');
     canApply = true;
+  } else if (tool === 'metadata') {
+    hint = 'Edit the fields above, then press Apply to stage them (takes effect on export).';
+    canApply = true;
+  } else if (tool === 'extract-images') {
+    hint = 'Press Apply to download every embedded image in this document as a separate file.';
+    canApply = true;
+  } else if (tool === 'compress-images') {
+    hint = els.compressEnable.checked
+      ? `Ready to enable Compress Images — quality ${els.compressQuality.value}%, max ${els.compressMaxDimension.value}px, on export.`
+      : (state.compressImages ? 'Press Apply to disable Compress Images.' : 'Check the box above, then press Apply to enable Compress Images.');
+    canApply = true;
   } else if (tool === 'export') {
     const active = activePageCount();
     hint = `Ready to export a PDF with ${active} active page(s).`;
@@ -2284,6 +2327,25 @@ async function applyCurrentTool() {
       setStatus(state.searchable
         ? 'Make Searchable enabled — scanned pages will get an invisible OCR text layer on export.'
         : 'Make Searchable disabled.');
+    } else if (tool === 'metadata') {
+      state.metadata = {
+        title: els.metadataTitle.value.trim(),
+        author: els.metadataAuthor.value.trim(),
+        subject: els.metadataSubject.value.trim(),
+        keywords: els.metadataKeywords.value.trim(),
+      };
+      await persistSession();
+      setStatus('Metadata staged — takes effect on export.');
+    } else if (tool === 'extract-images') {
+      await extractEmbeddedImages();
+    } else if (tool === 'compress-images') {
+      state.compressImages = els.compressEnable.checked
+        ? { quality: Number(els.compressQuality.value) / 100, maxDimension: Number(els.compressMaxDimension.value) || 1600 }
+        : null;
+      await persistSession();
+      setStatus(state.compressImages
+        ? `Compress Images enabled — quality ${els.compressQuality.value}%, max ${els.compressMaxDimension.value}px, on export.`
+        : 'Compress Images disabled.');
     } else if (tool === 'split') {
       await splitDocument();
     } else if (tool === 'export') {
@@ -2423,8 +2485,225 @@ async function applyRedactionsToDoc(pdfDoc, pages) {
   }
 }
 
+// --- Metadata ---------------------------------------------------------------
+
+// Prefills the Metadata panel: staged edits (state.metadata) win if present,
+// otherwise falls back to the document's actual current metadata so opening
+// the panel shows real values instead of blanks.
+async function populateMetadataFields() {
+  if (state.metadata) {
+    els.metadataTitle.value = state.metadata.title || '';
+    els.metadataAuthor.value = state.metadata.author || '';
+    els.metadataSubject.value = state.metadata.subject || '';
+    els.metadataKeywords.value = state.metadata.keywords || '';
+    return;
+  }
+  try {
+    const { info } = await state.pdfjsDoc.getMetadata();
+    els.metadataTitle.value = info.Title || '';
+    els.metadataAuthor.value = info.Author || '';
+    els.metadataSubject.value = info.Subject || '';
+    els.metadataKeywords.value = info.Keywords || '';
+  } catch (err) {
+    console.error('Failed to read existing metadata', err);
+  }
+}
+
+// --- Embedded images (shared by Extract Images and Compress Images) --------
+//
+// Walks every indirect object in a loaded pdf-lib document looking for Image
+// XObjects, decoding the ones we know how to handle:
+//   - DCTDecode (JPEG): the stream's raw bytes already ARE a complete, valid
+//     JPEG file — no decoding needed, just read them out.
+//   - No filter, or FlateDecode, with DeviceRGB/DeviceGray at 8 bits/component:
+//     decodePDFRawStream(obj).decode() gives the raw pixel bytes, which a
+//     canvas can turn into an image via ImageData.
+// Anything else (JPEG 2000, CCITT fax, indexed/ICC color spaces, non-8-bit
+// components, chained/array filters) is intentionally left alone — these are
+// uncommon in practice and decoding them correctly is a lot more work than
+// this feature is worth; they're counted as "skipped" so the UI can say so.
+function findEmbeddedImages(pdfDoc) {
+  const images = [];
+  let skippedCount = 0;
+  const ctx = pdfDoc.context;
+  const name = (n) => PDFLib.PDFName.of(n);
+  // This bundle's PDFDict doesn't expose .lookup()/.lookupMaybe() (only the
+  // raw .get()), so indirect references need resolving by hand.
+  const lookup = (dict, key) => ctx.lookup(dict.get(key));
+
+  for (const [ref, obj] of ctx.enumerateIndirectObjects()) {
+    const dict = obj && obj.dict;
+    if (!dict) continue;
+    const subtype = lookup(dict, name('Subtype'));
+    if (!subtype || subtype.toString() !== '/Image') continue;
+
+    const widthObj = lookup(dict, name('Width'));
+    const heightObj = lookup(dict, name('Height'));
+    const width = widthObj ? widthObj.asNumber() : null;
+    const height = heightObj ? heightObj.asNumber() : null;
+    if (!width || !height) {
+      skippedCount++;
+      continue;
+    }
+
+    const filterObj = lookup(dict, name('Filter'));
+    const filterStr = filterObj ? filterObj.toString() : null;
+
+    if (filterStr === '/DCTDecode') {
+      try {
+        const bytes = new Uint8Array(obj.getContents());
+        images.push({ ref, kind: 'jpeg', width, height, bytes, originalSize: bytes.length });
+      } catch (err) {
+        skippedCount++;
+      }
+      continue;
+    }
+
+    if (filterStr === null || filterStr === '/FlateDecode') {
+      const colorSpaceObj = lookup(dict, name('ColorSpace'));
+      const bpcObj = lookup(dict, name('BitsPerComponent'));
+      const colorSpace = colorSpaceObj ? colorSpaceObj.toString() : null;
+      const bpc = bpcObj ? bpcObj.asNumber() : null;
+      if (bpc === 8 && (colorSpace === '/DeviceRGB' || colorSpace === '/DeviceGray')) {
+        try {
+          const decoded = PDFLib.decodePDFRawStream(obj).decode();
+          // originalSize is the stream's bytes AS STORED IN THE FILE (still
+          // filter-compressed), not the decoded pixel count above — that's
+          // what a recompressed replacement actually needs to beat.
+          const originalSize = new Uint8Array(obj.getContents()).length;
+          images.push({
+            ref, kind: colorSpace === '/DeviceRGB' ? 'raw-rgb' : 'raw-gray', width, height, bytes: decoded, originalSize,
+          });
+          continue;
+        } catch (err) {
+          // fall through to skipped
+        }
+      }
+    }
+
+    skippedCount++;
+  }
+
+  return { images, skippedCount };
+}
+
+// Draws a decoded embedded image onto a canvas at its natural size, using
+// ImageData for raw RGB/Gray pixels or decoding the JPEG bytes for 'jpeg'.
+async function embeddedImageToCanvas(entry) {
+  const canvas = document.createElement('canvas');
+  canvas.width = entry.width;
+  canvas.height = entry.height;
+  const ctx = canvas.getContext('2d');
+
+  if (entry.kind === 'jpeg') {
+    const blob = new Blob([entry.bytes], { type: 'image/jpeg' });
+    const bitmap = await createImageBitmap(blob);
+    ctx.drawImage(bitmap, 0, 0, entry.width, entry.height);
+    bitmap.close();
+    return canvas;
+  }
+
+  const imageData = ctx.createImageData(entry.width, entry.height);
+  const src = entry.bytes;
+  const dst = imageData.data;
+  if (entry.kind === 'raw-rgb') {
+    for (let i = 0, j = 0; i < src.length; i += 3, j += 4) {
+      dst[j] = src[i];
+      dst[j + 1] = src[i + 1];
+      dst[j + 2] = src[i + 2];
+      dst[j + 3] = 255;
+    }
+  } else {
+    // raw-gray
+    for (let i = 0, j = 0; i < src.length; i += 1, j += 4) {
+      dst[j] = dst[j + 1] = dst[j + 2] = src[i];
+      dst[j + 3] = 255;
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+// Re-encodes one embedded image as a JPEG at the given quality, capping its
+// largest dimension at maxDimension. Returns null (rather than throwing) if
+// the image can't be decoded, so a single bad image doesn't fail the whole
+// export — the caller just leaves that image untouched.
+async function recompressEmbeddedImage(entry, { quality, maxDimension }) {
+  let canvas;
+  try {
+    canvas = await embeddedImageToCanvas(entry);
+  } catch (err) {
+    console.error('Failed to decode an embedded image for compression', err);
+    return null;
+  }
+
+  if (Math.max(entry.width, entry.height) > maxDimension) {
+    const scale = maxDimension / Math.max(entry.width, entry.height);
+    const resized = document.createElement('canvas');
+    resized.width = Math.max(1, Math.round(entry.width * scale));
+    resized.height = Math.max(1, Math.round(entry.height * scale));
+    resized.getContext('2d').drawImage(canvas, 0, 0, resized.width, resized.height);
+    canvas = resized;
+  }
+
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', quality));
+  if (!blob) return null;
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+// Extracts every embedded image from the (edited) document as a separate
+// download — reuses the sequential multi-download pattern Split already
+// established. Runs against buildEditedDocument()'s output rather than the
+// raw original bytes, so a redacted page's original image is never
+// extractable (it's already been replaced with the flattened, blacked-out
+// page raster by that point) — same reasoning as Make Searchable skipping
+// redacted pages.
+async function extractEmbeddedImages() {
+  const pdfDoc = await buildEditedDocument();
+  const { images, skippedCount } = findEmbeddedImages(pdfDoc);
+
+  if (!images.length) {
+    setStatus(skippedCount
+      ? `No extractable images — ${skippedCount} image(s) used an unsupported encoding and were skipped.`
+      : 'No embedded images found in this document.');
+    return;
+  }
+
+  let done = 0;
+  for (let i = 0; i < images.length; i++) {
+    const entry = images[i];
+    setStatus(`Extracting images… (${done + 1}/${images.length})`);
+    let bytes;
+    let ext;
+    let mimeType;
+    if (entry.kind === 'jpeg') {
+      bytes = entry.bytes;
+      ext = 'jpg';
+      mimeType = 'image/jpeg';
+    } else {
+      const canvas = await embeddedImageToCanvas(entry);
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
+      bytes = new Uint8Array(await blob.arrayBuffer());
+      ext = 'png';
+      mimeType = 'image/png';
+    }
+    await downloadBytes(bytes, `${state.baseName}-img${i + 1}.${ext}`, mimeType);
+    done++;
+  }
+
+  setStatus(`Extracted ${done} image(s).${skippedCount ? ` Skipped ${skippedCount} with an unsupported encoding.` : ''}`);
+}
+
 async function buildEditedDocument() {
   const pdfDoc = await PDFLib.PDFDocument.load(state.originalBytes.slice());
+
+  if (state.metadata) {
+    pdfDoc.setTitle(state.metadata.title || '');
+    pdfDoc.setAuthor(state.metadata.author || '');
+    pdfDoc.setSubject(state.metadata.subject || '');
+    pdfDoc.setKeywords((state.metadata.keywords || '').split(',').map((s) => s.trim()).filter(Boolean));
+  }
+
   let pages = pdfDoc.getPages();
   pages.forEach((page, idx) => {
     const addedAngle = state.rotations.get(idx) || 0;
@@ -2596,6 +2875,27 @@ async function buildEditedDocument() {
       }
     } catch (err) {
       console.error('Failed to draw page numbers', err);
+    }
+  }
+
+  if (state.compressImages) {
+    try {
+      const { images } = findEmbeddedImages(pdfDoc);
+      for (const entry of images) {
+        try {
+          const newBytes = await recompressEmbeddedImage(entry, state.compressImages);
+          if (!newBytes || newBytes.length >= entry.originalSize) continue; // not actually smaller — leave it alone
+          const newImg = await pdfDoc.embedJpg(newBytes);
+          await newImg.embed();
+          const newObj = pdfDoc.context.lookup(newImg.ref);
+          pdfDoc.context.assign(entry.ref, newObj);
+          pdfDoc.context.delete(newImg.ref);
+        } catch (err) {
+          console.error('Failed to compress an embedded image', err);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to enumerate embedded images for compression', err);
     }
   }
 
@@ -2787,6 +3087,8 @@ async function resetEverything() {
   state.ocrText = new Map();
   state.ocrWords = new Map();
   state.searchable = false;
+  state.metadata = null;
+  state.compressImages = null;
 
   await clearSession();
 
@@ -2804,6 +3106,9 @@ async function resetEverything() {
   els.insertPageSection.style.display = 'none';
   els.pageNumberSection.style.display = 'none';
   els.makeSearchableSection.style.display = 'none';
+  els.metadataSection.style.display = 'none';
+  els.extractImagesSection.style.display = 'none';
+  els.compressImagesSection.style.display = 'none';
   els.flattenRow.style.display = 'none';
   els.fieldDesignerOverlay.style.display = 'none';
   els.saveTemplateRow.style.display = 'none';
@@ -3231,6 +3536,19 @@ els.flattenCheckbox.addEventListener('change', () => {
 });
 
 els.searchableEnable.addEventListener('change', updateApplyHint);
+
+[els.metadataTitle, els.metadataAuthor, els.metadataSubject, els.metadataKeywords].forEach((el) => {
+  el.addEventListener('input', updateApplyHint);
+});
+
+els.compressQuality.addEventListener('input', () => {
+  els.compressQualityLabel.textContent = `${els.compressQuality.value}%`;
+  updateApplyHint();
+});
+[els.compressEnable, els.compressMaxDimension].forEach((el) => {
+  el.addEventListener('input', updateApplyHint);
+  el.addEventListener('change', updateApplyHint);
+});
 
 // --- OCR (Tesseract.js, vendored locally under lib/tesseract/, zero network) -
 // Loaded lazily — only when a scanned/image PDF actually needs it — so the
