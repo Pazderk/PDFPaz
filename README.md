@@ -1,6 +1,6 @@
-# PDFPaz
+# PrivatePDF
 
-Brog's PDF Editor — a 100% client-side Chrome side-panel extension for editing PDFs. Nothing ever leaves the browser: pdf.js handles rendering/reading and pdf-lib handles writing.
+A 100% client-side Chrome side-panel extension for editing PDFs. Nothing ever leaves the browser: pdf.js handles rendering/reading and pdf-lib handles writing.
 
 ## Features
 

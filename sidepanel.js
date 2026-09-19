@@ -1,4 +1,4 @@
-// Brog's PDF Editor - all processing happens locally via pdf.js (rendering/reading) and
+// PrivatePDF - all processing happens locally via pdf.js (rendering/reading) and
 // pdf-lib (writing). No network requests are ever made. The loaded document
 // and any applied edits are persisted to IndexedDB so they survive closing
 // the side panel (or the whole browser) — only Reset clears them.
